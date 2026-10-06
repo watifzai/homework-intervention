@@ -1,0 +1,16 @@
+{
+  "name": "year6-english-intervention",
+  "version": "1.0.0",
+  "description": "Teacher admin dashboard and pupil registration/homework workflow for a Year 6 English intervention platform.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "seed": "node server/seed.js",
+    "verify": "node scripts/verify.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}

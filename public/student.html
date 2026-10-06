@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Homework · Year 6 English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div class="header hero">
+    <div class="title" data-i18n="s.title">My Homework</div>
+    <div class="who">
+      <span id="langSlot"></span>
+      <span id="whoami"></span>
+      <button class="btn small secondary" id="logoutBtn" data-i18n="common.signOut">Sign out</button>
+    </div>
+  </div>
+  <div class="wrap" id="app"></div>
+
+  <script type="module">
+    import {
+      api, el, clear, fmtDate, fmtPct, loadingState, emptyState, errorState,
+      alertBox, levelName, statusBadge, picNode,
+    } from './js/common.js';
+    import { t, tServer, topicName, langToggle, applyI18n, getLang } from './js/i18n.js';
+
+    const app = document.getElementById('app');
+
+    async function boot() {
+      app.replaceChildren(loadingState());
+      try {
+        const me = await api('/api/auth/me');
+        if (!me.signedIn || me.role !== 'pupil') {
+          location.href = '/student-login.html';
+          return;
+        }
+        document.getElementById('whoami').textContent = me.pupil?.name || me.displayName || 'Pupil';
+        document.getElementById('langSlot').append(langToggle());
+        applyI18n();
+        const data = await api('/api/pupil/homework');
+        renderList(data);
+      } catch (err) {
+        app.replaceChildren(errorState(tServer(err.message), boot));
+      }
+    }
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await api('/api/auth/logout', { method: 'POST' });
+      location.href = '/';
+    });
+
+    function renderList({ pupil, homework }) {
+      const root = el('div', {});
+      root.append(el('div', { class: 'page-head' },
+        el('div', {},
+          el('h1', {}, t('s.hi') + pupil.name.split(' ')[0]),
+          el('div', { class: 'sub' },
+            pupil.proficiency
+              ? t('s.yourLevel') + levelName(pupil.proficiency)
+              : t('s.levelSoon')),
+        ),
+      ));
+      if (!homework.length) {
+        root.append(emptyState(t('s.empty')));
+      }
+      const grid = el('div', { class: 'grid' });
+      for (const hw of homework) {
+        const action =
+          hw.status === 'submitted'
+            ? el('button', { class: 'btn secondary small', onclick: () => openHomework(hw) }, t('s.viewFeedback'))
+            : hw.status === 'in_progress'
+              ? el('button', { class: 'btn small', onclick: () => openHomework(hw) }, t('s.continue'))
+              : el('button', { class: 'btn small', onclick: () => openHomework(hw) }, t('s.start'));
+        grid.append(el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', { class: 'pname' }, topicName(hw.title)),
+            statusBadge(hw.status),
+          ),
+          el('div', { class: 'pcard-stats' },
+            el('div', { class: 'stat-chip' }, t('s.dueChip'), el('b', {}, fmtDate(hw.dueDate))),
+          ),
+          el('div', { class: 'pcard-actions' }, action),
+        ));
+      }
+      root.append(grid);
+      app.replaceChildren(root);
+    }
+
+    // =====================================================================
+    // doing homework
+    // =====================================================================
+    async function openHomework(hw) {
+      const root = el('div', {});
+      app.replaceChildren(root);
+      root.append(loadingState());
+      let wd;
+      try {
+        wd = await api(`/api/pupil/pupil-assignments/${hw.id}`);
+      } catch (err) {
+        root.replaceChildren(errorState(tServer(err.message), () => boot()));
+        return;
+      }
+      root.replaceChildren(renderWork(wd));
+    }
+
+    function renderWork(wd) {
+      const root = el('div', {});
+      const c = wd.snapshot;
+      const answers = { ...wd.answers };
+      const attempts = [];        // first-attempt records: {qid, sub?, firstAnswer}
+      const state = { hintsUsed: wd.hintsUsed, retriesUsed: wd.retriesUsed };
+
+      // record first attempts (before any hint/retry) for honest analytics
+      function recordFirst(qid, sub, val) {
+        if (val === null || val === undefined || val === '') return;
+        const existing = attempts.find((a) => a.qid === qid && (a.sub ?? null) === (sub ?? null));
+        if (!existing) attempts.push({ qid, sub: sub ?? null, firstAnswer: val });
+      }
+
+      const header = el('div', { class: 'row spread mb' },
+        el('div', {},
+          el('h1', { style: 'font-size: 1.2rem; margin: 0;' }, topicName(wd.title)),
+          el('div', { class: 'small muted' }, t('common.due') + ' ' + fmtDate(wd.dueDate)),
+        ),
+        statusBadge(wd.status),
+        el('button', { class: 'btn small secondary', onclick: () => boot() }, t('common.back')),
+      );
+      root.append(header);
+
+      if (wd.submitted) {
+        root.append(alertBox('info', t('s.submittedBanner')));
+      }
+      if (wd.feedback) {
+        root.append(alertBox('success', t('s.feedback') + wd.feedback));
+      }
+
+      const msg = el('div', {});
+      const saveBtn = el('button', { class: 'btn secondary' }, t('s.save'));
+      saveBtn.addEventListener('click', () => persist('save'));
+      const submitBtn = el('button', { class: 'btn' }, t('s.submit'));
+      submitBtn.addEventListener('click', () => {
+        if (!confirm(t('s.confirmSubmit'))) return;
+        persist('submit');
+      });
+      if (wd.submitted) {
+        saveBtn.disabled = true;
+        submitBtn.disabled = true;
+        submitBtn.textContent = t('s.submittedBtn');
+      }
+      const sticky = wd.submitted
+        ? el('div', { class: 'row spread', style: 'position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; margin-top: 12px;' },
+            el('span', { class: 'small muted' }, t('s.hintsUsed', { h: state.hintsUsed, r: state.retriesUsed })),
+            el('button', { class: 'btn secondary', onclick: () => boot() }, t('s.backToHw')))
+        : el('div', { class: 'row spread', style: 'position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; margin-top: 12px;' },
+            el('span', { class: 'small muted' }, t('s.hintsUsed', { h: state.hintsUsed, r: state.retriesUsed })),
+            el('div', { class: 'row' }, saveBtn, submitBtn));
+
+      async function persist(kind) {
+        clear(msg);
+        const btn = kind === 'save' ? saveBtn : submitBtn;
+        btn.disabled = true;
+        try {
+          if (kind === 'save') {
+            await api(`/api/pupil/pupil-assignments/${wd.id}/save`, { method: 'POST', body: {
+              answers, hintsUsed: 0, retriesUsed: 0,
+            }});
+            msg.append(alertBox('success', t('s.savedToast')));
+          } else {
+            const r = await api(`/api/pupil/pupil-assignments/${wd.id}/submit`, { method: 'POST', body: {
+              answers, attemptsLog: attempts,
+            }});
+            clear(root);
+            root.append(
+              el('div', { class: 'state' },
+                el('h2', { style: 'margin: 4px 0;' }, t('s.successH')),
+                el('p', { class: 'muted' }, topicName(wd.title)),
+                r.score != null
+                  ? el('p', {}, t('s.autoMarked'), el('b', {}, fmtPct(r.score)))
+                  : null,
+                r.needsReview
+                  ? el('p', { class: 'small muted' }, t('s.writtenReviewNote'))
+                  : null,
+                el('button', { class: 'btn mt', onclick: () => boot() }, t('s.backList')),
+              ),
+            );
+            return;
+          }
+        } catch (err) {
+          msg.append(alertBox('error', tServer(err.message)));
+        }
+        btn.disabled = false;
+      }
+      root.append(msg);
+
+      // ---- study material ----
+      if (c.reading) {
+        root.append(el('div', { class: 'card mb' },
+          el('div', { class: 'qkind' }, t('s.study.reading')),
+          el('p', { style: 'font-size: 1.05rem; margin: 8px 0 0;' }, c.reading),
+        ));
+      }
+      if (c.modelSentences) {
+        root.append(el('div', { class: 'card mb' },
+          el('div', { class: 'qkind' }, t('s.study.models')),
+          el('ul', { style: 'margin: 8px 0 0; padding-left: 20px; font-size: 1.05rem;' },
+            c.modelSentences.map((s) => el('li', {}, s)),
+          ),
+        ));
+      }
+      if (c.targetWords) {
+        root.append(el('div', { class: 'card mb' },
+          el('div', { class: 'qkind' }, t('s.study.targets')),
+          el('div', { class: 'row', style: 'margin-top: 8px;' },
+            c.targetWords.map((w) => {
+              const chip = el('span', { class: 'stat-chip', style: 'font-size: 1rem;' });
+              chip.append(picNode(w.picture) || w.picture, ' ', w.word);
+              return chip;
+            }),
+          ),
+        ));
+      }
+
+      // ---- questions ----
+      for (const [qi, q] of c.questions.entries()) {
+        const block = questionBlock(q, qi);
+        if (wd.submitted) {
+          block.style.opacity = '0.75';
+          block.querySelectorAll('button, select, textarea').forEach((n) => { n.disabled = true; });
+        }
+        root.append(block);
+      }
+      root.append(sticky);
+      return root;
+
+      // ---- question renderers ----
+      function questionBlock(q, qi) {
+        const block = el('div', { class: 'qblock' });
+        block.append(el('div', { class: 'qhead' },
+          el('span', { class: 'qkind' }, t('s.question', { n: qi + 1 })),
+        ));
+        block.append(el('div', { class: 'qtext' }, q.prompt));
+        // Malay comprehension helper under the English content prompt
+        if (getLang() === 'ms') {
+          block.append(el('div', { class: 'small muted', style: 'margin: -2px 0 10px;' }, t('s.helper.' + q.kind)));
+        }
+
+        if (q.kind === 'choice' || q.kind === 'choicePic') {
+          q.items.forEach((item, i) => {
+            const holder = el('div', { style: 'margin-bottom: 10px;' });
+            if (q.kind === 'choicePic') {
+              holder.append(el('div', { class: 'picture' }, picNode(item.picture, 'pic-embed') || item.picture));
+            }
+            if (item.text) holder.append(el('div', { class: 'small', style: 'margin-bottom: 4px;' }, item.text));
+            const grid = el('div', { class: 'optgrid' });
+            item.options.forEach((opt) => {
+              const b = el('button', {
+                type: 'button',
+                class: 'opt' + (answers[q.id]?.[i] === opt ? ' sel' : ''),
+                onclick: () => {
+                  answers[q.id] = { ...(answers[q.id] || {}), [i]: opt };
+                  recordFirst(q.id, i, opt);
+                  grid.querySelectorAll('.opt').forEach((x) => x.classList.remove('sel'));
+                  b.classList.add('sel');
+                },
+              }, opt);
+              grid.append(b);
+            });
+            holder.append(grid);
+            block.append(holder);
+          });
+        } else if (q.kind === 'match') {
+          q.pairs.forEach((pair, i) => {
+            const sel = el('select', {},
+              el('option', { value: '' }, t('s.chooseWord')),
+              q.wordBank.map((w) => el('option', { value: w }, w)),
+            );
+            if (answers[q.id]?.[i]) sel.value = answers[q.id][i];
+            sel.addEventListener('change', () => {
+              answers[q.id] = { ...(answers[q.id] || {}), [i]: sel.value || undefined };
+              recordFirst(q.id, i, sel.value);
+            });
+            block.append(el('div', { class: 'matchrow' },
+              el('span', { class: 'picture' }, picNode(pair.picture, 'pic-embed') || pair.picture),
+              sel,
+            ));
+          });
+        } else if (q.kind === 'arrange') {
+          const chosen = []; // ordered tiles
+          const bank = el('div', { class: 'tileline', style: 'margin-bottom: 10px;' });
+          const line = el('div', { class: 'tileline' });
+          const redraw = () => {
+            clear(bank); clear(line);
+            for (const [ti, tile] of q.tiles.entries()) {
+              if (chosen.includes(ti)) continue;
+              bank.append(el('button', {
+                type: 'button', class: 'tile',
+                onclick: () => {
+                  chosen.push(ti);
+                  answers[q.id] = chosen.map((t) => q.tiles[t]).join(' ');
+                  recordFirst(q.id, null, answers[q.id]);
+                  state.retriesUsed++; // rearranging counts as a retry
+                  redraw();
+                },
+              }, tile));
+            }
+            for (const [ci, ti] of chosen.entries()) {
+              line.append(el('button', {
+                type: 'button', class: 'tile sel',
+                title: t('s.tapRemove'),
+                onclick: () => {
+                  chosen.splice(ci, 1);
+                  answers[q.id] = chosen.length ? chosen.map((t) => q.tiles[t]).join(' ') : undefined;
+                  redraw();
+                },
+              }, q.tiles[ti]));
+            }
+          };
+          if (answers[q.id]) {
+            const words = String(answers[q.id]).split(' ');
+            for (const w of words) {
+              const ti = q.tiles.indexOf(w);
+              if (ti !== -1 && !chosen.includes(ti)) chosen.push(ti);
+            }
+          }
+          redraw();
+          block.append(bank, line);
+          if (q.hint) {
+            const hintBtn = el('button', { type: 'button', class: 'btn small secondary' }, t('s.hint'));
+            const hintText = el('div', {});
+            hintBtn.addEventListener('click', () => {
+              state.hintsUsed++;
+              hintBtn.disabled = true;
+              hintText.append(el('div', { class: 'hint-text' }, q.hint));
+            });
+            block.append(el('div', { class: 'row mt' }, hintBtn), hintText);
+          }
+        } else if (q.kind === 'written') {
+          const ta = el('textarea', { placeholder: t('s.writePh') });
+          if (answers[q.id]) ta.value = answers[q.id];
+          let first = null;
+          ta.addEventListener('input', () => {
+            answers[q.id] = ta.value;
+            if (first === null && ta.value.trim()) {
+              first = ta.value;
+              attempts.push({ qid: q.id, sub: null, firstAnswer: first });
+            }
+          });
+          block.append(ta);
+        }
+        return block;
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

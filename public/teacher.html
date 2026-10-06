@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teacher Dashboard · Year 6 English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <nav class="navbar">
+    <div class="nav-inner">
+      <div class="brand">Year 6 English <span class="muted small" data-i18n="t.role">· Teacher</span></div>
+      <div class="navlinks" id="tabs">
+        <button data-tab="students" class="active" data-i18n="t.tab.students">Students</button>
+        <button data-tab="assign" data-i18n="t.tab.assign">Assign Homework</button>
+        <button data-tab="studio" data-i18n="studio.tab">Homework Studio</button>
+        <button data-tab="manager" data-i18n="t.tab.manager">Homework Manager</button>
+      </div>
+      <div class="nav-right">
+        <select id="classSelect" class="nav-class" aria-label="Class"></select>
+        <button class="btn small secondary" id="addClassBtn" data-i18n="t.addClass">Add class</button>
+        <span id="langSlot"></span>
+        <span id="whoami" class="muted small"></span>
+        <button class="btn small secondary" id="logoutBtn" data-i18n="common.signOut">Sign out</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="wrap">
+    <div id="classInfo" class="small muted mb"></div>
+    <div id="tabContent"></div>
+  </div>
+
+  <script type="module">
+    import {
+      api, el, clear, fmtDate, fmtPct, loadingState, emptyState, errorState,
+      alertBox, levelName, levelBadge, statusBadge, demoBadge,
+      isImageRef, picNode, uploadImage,
+    } from './js/common.js';
+    import { t, tServer, topicName, langToggle, applyI18n } from './js/i18n.js';
+    import { generateHomework, parseHomeworkRequest } from './js/ai.js';
+
+    // ---------- shell state ----------
+    const state = {
+      me: null,
+      classes: [],
+      classId: null,
+      cls: null,
+      tab: 'students',
+    };
+    const tabContent = document.getElementById('tabContent');
+
+    async function boot() {
+      tabContent.replaceChildren(loadingState());
+      try {
+        state.me = await api('/api/auth/me');
+        if (!state.me.signedIn || state.me.role !== 'teacher') {
+          location.href = '/teacher-login.html';
+          return;
+        }
+        document.getElementById('whoami').textContent = state.me.displayName || state.me.username;
+        document.getElementById('langSlot').append(langToggle());
+        applyI18n();
+        const { classes } = await api('/api/teacher/classes');
+        state.classes = classes;
+        if (!classes.length) {
+          tabContent.replaceChildren(emptyState('No classes yet. Demo data appears after seeding.'));
+          return;
+        }
+        const sel = document.getElementById('classSelect');
+        for (const c of classes) sel.append(el('option', { value: c.id }, c.name + (c.isDemo ? ' (demo)' : '')));
+        state.classId = classes[0].id;
+        sel.value = state.classId;
+        sel.addEventListener('change', () => { state.classId = Number(sel.value); renderTab(); });
+        renderTab();
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), boot));
+      }
+    }
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await api('/api/auth/logout', { method: 'POST' });
+      location.href = '/';
+    });
+
+    // --- add class: creates a real DB row with generated codes ---------------
+    document.getElementById('addClassBtn').addEventListener('click', () => {
+      const nameIn = el('input', { type: 'text', maxlength: '80', placeholder: t('t.classNamePh') });
+      const msg = el('div', {});
+      const saveBtn = el('button', { class: 'btn' }, t('common.save'));
+      const submit = async () => {
+        saveBtn.disabled = true;
+        try {
+          const { class: c } = await api('/api/teacher/classes', { method: 'POST', body: { name: nameIn.value } });
+          const sel = document.getElementById('classSelect');
+          sel.append(el('option', { value: c.id }, c.name + (c.isDemo ? ' (demo)' : '')));
+          state.classes.push(c);
+          state.classId = c.id;
+          sel.value = String(c.id);
+          modal.close();
+          renderTab();
+        } catch (err) {
+          msg.replaceChildren(alertBox('error', tServer(err.message)));
+          saveBtn.disabled = false;
+        }
+      };
+      saveBtn.addEventListener('click', submit);
+      nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+      const body = el('div', {},
+        el('label', { class: 'field' }, el('span', {}, t('t.className')), nameIn),
+        el('p', { class: 'small muted' }, t('t.addClassHelp')),
+        msg,
+        el('div', { class: 'modal-actions' },
+          el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+          saveBtn,
+        ),
+      );
+      const modal = openModal(t('t.addClassTitle'), body);
+      nameIn.focus();
+    });
+
+    for (const b of document.querySelectorAll('#tabs button')) {
+      b.addEventListener('click', () => {
+        document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
+        state.tab = b.dataset.tab;
+        renderTab();
+      });
+    }
+
+    function renderTab() {
+      state.cls = state.classes.find((c) => c.id === state.classId);
+      renderClassInfo();
+      if (state.tab === 'students') renderStudents();
+      else if (state.tab === 'assign') renderAssign();
+      else if (state.tab === 'studio') renderStudio();
+      else renderManager();
+    }
+
+    function renderClassInfo() {
+      const info = document.getElementById('classInfo');
+      const c = state.cls;
+      if (!c) { info.textContent = ''; return; }
+      clear(info);
+      info.append(
+        t('t.regLink'),
+        el('code', {}, `/register.html?class=${c.code}`),
+        t('t.code'),
+        el('b', {}, c.code),
+        t('t.pupilCode'),
+        el('b', {}, c.regCode),
+        c.isDemo ? demoBadge() : '',
+        el('button', { class: 'btn small secondary', style: 'margin-left: 6px;', onclick: renameClass }, t('t.rename')),
+        el('button', { class: 'btn small danger', style: 'margin-left: 6px;', onclick: deleteClass }, t('t.deleteClass')),
+      );
+    }
+
+    // --- rename / delete the selected class ---------------------------------
+    function renameClass() {
+      const c = state.cls;
+      const nameIn = el('input', { type: 'text', maxlength: '80', value: c.name });
+      const msg = el('div', {});
+      const saveBtn = el('button', { class: 'btn' }, t('common.save'));
+      const submit = async () => {
+        saveBtn.disabled = true;
+        try {
+          const { class: updated } = await api(`/api/teacher/classes/${c.id}`, { method: 'PATCH', body: { name: nameIn.value } });
+          Object.assign(c, updated);
+          const opt = document.querySelector(`#classSelect option[value="${c.id}"]`);
+          if (opt) opt.textContent = c.name + (c.isDemo ? ' (demo)' : '');
+          modal.close();
+          renderTab();
+        } catch (err) {
+          msg.replaceChildren(alertBox('error', tServer(err.message)));
+          saveBtn.disabled = false;
+        }
+      };
+      saveBtn.addEventListener('click', submit);
+      nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+      const body = el('div', {},
+        el('label', { class: 'field' }, el('span', {}, t('t.className')), nameIn),
+        msg,
+        el('div', { class: 'modal-actions' },
+          el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+          saveBtn,
+        ),
+      );
+      const modal = openModal(t('t.renameTitle'), body);
+      nameIn.focus();
+    }
+
+    function deleteClass() {
+      const c = state.cls;
+      const msg = el('div', {});
+      const delBtn = el('button', { class: 'btn danger' }, t('t.deleteClass'));
+      const submit = async () => {
+        delBtn.disabled = true;
+        try {
+          await api(`/api/teacher/classes/${c.id}`, { method: 'DELETE' });
+          state.classes = state.classes.filter((x) => x.id !== c.id);
+          const opt = document.querySelector(`#classSelect option[value="${c.id}"]`);
+          if (opt) opt.remove();
+          modal.close();
+          if (state.classes.length) {
+            state.classId = state.classes[0].id;
+            document.getElementById('classSelect').value = String(state.classId);
+            renderTab();
+          } else {
+            location.reload(); // boot() shows the no-classes empty state
+          }
+        } catch (err) {
+          msg.replaceChildren(alertBox('error', tServer(err.message)));
+          delBtn.disabled = false;
+        }
+      };
+      delBtn.addEventListener('click', submit);
+      const body = el('div', {},
+        el('p', {}, t('t.deleteClassConfirm', { name: c.name })),
+        msg,
+        el('div', { class: 'modal-actions' },
+          el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+          delBtn,
+        ),
+      );
+      openModal(t('t.deleteClass'), body);
+    }
+
+    // =====================================================================
+    // STUDENTS TAB
+    // =====================================================================
+    async function renderStudents() {
+      tabContent.replaceChildren(loadingState());
+      try {
+        const data = await api(`/api/teacher/students?classId=${state.classId}`);
+        renderStudentsDone(data);
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), renderStudents));
+      }
+    }
+
+    function renderStudentsDone({ className, isDemo, students }) {
+      const root = el('div', {});
+      const head = el('div', { class: 'page-head' },
+        el('div', {},
+          el('h1', {}, t('t.tab.students')),
+          el('div', { class: 'sub' }, t('t.students.sub', { n: students.length, class: className })),
+        ),
+        el('button', { class: 'btn', onclick: () => addPupil() }, t('t.addPupil')),
+      );
+      const search = el('input', { type: 'text', placeholder: t('t.searchPh'), id: 'search' });
+      const levelFilter = el('select', {},
+        el('option', { value: '' }, t('t.filter.allLevels')),
+        el('option', { value: 'none' }, t('t.filter.noLevel')),
+        el('option', { value: 'words' }, levelName('words')),
+        el('option', { value: 'sentences' }, levelName('sentences')),
+        el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+      );
+      const regFilter = el('select', {},
+        el('option', { value: '' }, t('t.filter.all')),
+        el('option', { value: 'registered' }, t('t.filter.registered')),
+        el('option', { value: 'unregistered' }, t('t.filter.unregistered')),
+      );
+      const controls = el('div', { class: 'row mb' },
+        el('label', { class: 'field', style: 'margin:0;flex:1;min-width:180px' }, search),
+        levelFilter, regFilter,
+      );
+      const grid = el('div', { class: 'grid' });
+      root.append(head, controls, grid);
+
+      function apply() {
+        const term = search.value.trim().toLowerCase();
+        const lvl = levelFilter.value;
+        const reg = regFilter.value;
+        clear(grid);
+        const filtered = students.filter((s) => {
+          if (term && !s.name.toLowerCase().includes(term)) return false;
+          if (lvl === 'none' && s.proficiency) return false;
+          if (lvl && lvl !== 'none' && s.proficiency !== lvl) return false;
+          if (reg === 'registered' && !s.registered) return false;
+          if (reg === 'unregistered' && s.registered) return false;
+          return true;
+        });
+        if (!filtered.length) {
+          grid.replaceChildren(emptyState(t('t.noMatch')));
+          return;
+        }
+        for (const s of filtered) grid.append(studentCard(s));
+      }
+      search.addEventListener('input', apply);
+      levelFilter.addEventListener('change', apply);
+      regFilter.addEventListener('change', apply);
+
+      function studentCard(s) {
+        const note = el('div', { class: 'small muted', style: 'min-height: 1em;' });
+        const badge = levelBadge(s.proficiency);
+        const lvlSel = el('select', {},
+          el('option', { value: '' }, t('level.set')),
+          el('option', { value: 'words' }, levelName('words')),
+          el('option', { value: 'sentences' }, levelName('sentences')),
+          el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+        );
+        lvlSel.value = s.proficiency || '';
+        const saveBtn = el('button', { class: 'btn small', disabled: '' }, t('common.save'));
+        saveBtn.addEventListener('click', async () => {
+          if (!lvlSel.value || lvlSel.value === s.proficiency) { saveBtn.disabled = true; return; }
+          saveBtn.disabled = true;
+          try {
+            await api(`/api/teacher/pupils/${s.id}/proficiency`, { method: 'POST', body: { proficiency: lvlSel.value } });
+            s.proficiency = lvlSel.value;
+            badge.className = 'badge level-' + s.proficiency;   // label updates in place
+            badge.textContent = levelName(s.proficiency);
+            note.style.color = '';
+            note.textContent = t('t.levelSaved', { level: levelName(s.proficiency) });
+          } catch (err) {
+            note.textContent = tServer(err.message);
+            note.style.color = 'var(--bad)';
+            saveBtn.disabled = false;
+          }
+        });
+        lvlSel.addEventListener('change', () => {
+          saveBtn.disabled = !lvlSel.value || lvlSel.value === s.proficiency;
+        });
+
+        const latest = s.latest
+          ? el('div', { class: 'stat-chip' }, t('t.latest'), el('b', {}, fmtPct(s.latest.score) ?? t('common.notYet')), ` · ${topicName(s.latest.title)}`)
+          : el('div', { class: 'stat-chip' }, t('t.latest'), el('b', {}, t('t.noResults')));
+
+        return el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', {},
+              el('div', { class: 'pname' }, s.name),
+              el('div', { class: 'pno' }, 'No. ' + s.studentNo),
+            ),
+            s.registered
+              ? el('span', { class: 'badge ok' }, t('common.registered'))
+              : el('span', { class: 'badge muted' }, t('common.notRegistered')),
+          ),
+          el('div', { class: 'pcard-stats' },
+            badge,
+            el('div', { class: 'stat-chip' }, t('t.homeworkDone'), el('b', {}, `${s.completed}/${s.assigned}`), t('t.done')),
+            latest,
+          ),
+          el('label', { class: 'field', style: 'margin: 8px 0;' },
+            el('span', { class: 'small muted' }, t('t.proficiency')),
+            el('div', { class: 'row', style: 'flex-wrap: nowrap;' },
+              el('div', { style: 'flex: 1;' }, lvlSel),
+              saveBtn,
+            ),
+          ),
+          note,
+          el('div', { class: 'pcard-actions' },
+            el('button', { class: 'btn secondary small', onclick: () => editPupil(s) }, t('t.edit')),
+            el('button', { class: 'btn secondary small', onclick: () => showProgress(s) }, t('t.viewProgress')),
+            s.registered
+              ? el('button', {
+                  class: 'btn danger small',
+                  title: t('t.unlinkTitle'),
+                  onclick: async () => {
+                    if (!confirm(t('t.unlinkConfirm', { name: s.name }))) return;
+                    try {
+                      await api(`/api/teacher/pupils/${s.id}/unlink`, { method: 'POST', body: {} });
+                      renderStudents();
+                    } catch (err) { alert(tServer(err.message)); }
+                  },
+                }, t('t.unlink'))
+              : null,
+          ),
+        );
+      }
+
+      tabContent.replaceChildren(root);
+      apply();
+    }
+
+    // =====================================================================
+    // ASSIGN HOMEWORK TAB
+    // =====================================================================
+    async function renderAssign() {
+      tabContent.replaceChildren(loadingState());
+      try {
+        const { sets } = await api('/api/teacher/templates');
+        renderAssignDone(sets);
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), renderAssign));
+      }
+    }
+
+    function renderAssignDone(sets) {
+      const root = el('div', {});
+      root.append(
+        el('div', { class: 'page-head' },
+          el('div', {},
+            el('h1', {}, t('t.tab.assign')),
+            el('div', { class: 'sub' }, t('t.assign.sub')),
+          ),
+        ),
+        el('div', { class: 'alert info mb' }, t('t.assign.info')),
+      );
+      const grid = el('div', { class: 'grid wide' });
+      const lvlRow = (label, tpl) => el('li', {},
+        `${label}: ${tpl?.questionCount ?? '0'} ${t('common.questions')} · ${tpl?.minutes ?? '0'} ${t('common.min')}`,
+        tpl ? el('button', { class: 'btn small secondary', style: 'margin-left: 6px; min-height: 26px; padding: 2px 8px;', onclick: () => editTemplate(tpl) }, t('t.edit')) : null,
+      );
+      for (const set of sets) {
+        const words = set.templates.find((t) => t.level === 'words');
+        const sentences = set.templates.find((t) => t.level === 'sentences');
+        const paragraphs = set.templates.find((t) => t.level === 'paragraphs');
+        grid.append(el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', { class: 'pname', style: 'font-size: 1.1rem;' }, topicName(set.topic)),
+            set.isDemo ? demoBadge() : null,
+          ),
+          el('div', { class: 'small muted mt' }, t('t.eachLevel')),
+          el('ul', { class: 'small muted', style: 'margin: 6px 0; padding-left: 18px;' },
+            lvlRow(levelName('words'), words),
+            lvlRow(levelName('sentences'), sentences),
+            lvlRow(levelName('paragraphs'), paragraphs),
+          ),
+          el('div', { class: 'row' },
+            el('button', { class: 'btn secondary small', onclick: () => previewSet(set) }, t('t.preview')),
+            el('button', { class: 'btn small', onclick: () => startAssign(set) }, t('t.select')),
+          ),
+        ));
+      }
+      if (!sets.length) grid.replaceChildren(emptyState(t('t.noTemplates')));
+      root.append(grid);
+      tabContent.replaceChildren(root);
+    }
+
+    async function previewSet(set) {
+      const body = el('div', {});
+      const modal = openModal(t('t.previewTitle', { topic: topicName(set.topic) }), body);
+      for (const t of set.templates) {
+        body.append(el('h4', { style: 'margin: 12px 0 4px;' }, `${levelName(t.level)}: ${t.title}`));
+        try {
+          const full = await api(`/api/teacher/templates/${t.id}/preview`);
+          body.append(renderTemplatePreview(full));
+        } catch (err) {
+          body.append(alertBox('error', tServer(err.message)));
+        }
+      }
+      modal.appendCloseButton();
+    }
+
+    // Picture field for the template editors: an emoji/link text input with
+    // image upload (button or clipboard paste) and a live thumbnail. The
+    // value stays a plain string — emoji, an /img/<id> reference, or a link.
+    function makePicField(value, onChange, width = 64) {
+      const input = el('input', { type: 'text', value, style: `width: ${width}px; min-width: ${width}px; text-align: center;` });
+      const thumb = el('span', { class: 'pic-thumb', 'aria-hidden': 'true' });
+      const err = el('span', { class: 'small', style: 'color: var(--bad);' });
+      const fileIn = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', style: 'display: none;' });
+      const redraw = () => {
+        clear(thumb);
+        thumb.classList.toggle('is-img', isImageRef(input.value));
+        if (isImageRef(input.value)) thumb.append(el('img', { src: input.value, alt: '', referrerpolicy: 'no-referrer' }));
+        else if (input.value.trim()) thumb.append(input.value.trim());
+      };
+      const setVal = (v) => { input.value = v; onChange(v); redraw(); };
+      const upload = async (file) => {
+        if (!file) return;
+        err.textContent = '';
+        try { setVal(await uploadImage(file)); }
+        catch (ex) { err.textContent = tServer(ex.message); }
+      };
+      input.addEventListener('input', () => { onChange(input.value); redraw(); });
+      // Pasting a screenshot or copied image uploads it; plain text (emoji or
+      // a link) falls through to the normal paste behaviour.
+      input.addEventListener('paste', (e) => {
+        const f = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+        if (!f) return;
+        e.preventDefault();
+        upload(f);
+      });
+      fileIn.addEventListener('change', () => { upload(fileIn.files[0]); fileIn.value = ''; });
+      const btn = el('button', {
+        type: 'button', class: 'btn small secondary',
+        title: t('te.picUpload'), 'aria-label': t('te.picUpload'),
+        onclick: () => fileIn.click(),
+      }, '🖼');
+      redraw();
+      return el('span', { class: 'picfield' }, input, btn, thumb, err, fileIn);
+    }
+
+    function renderTemplatePreview(full) {
+      const box = el('div', { class: 'qblock' });
+      const c = full.content;
+      if (c.reading) box.append(el('p', { class: 'small muted' }, t('t.reading'), el('i', {}, c.reading)));
+      if (c.modelSentences) box.append(el('p', { class: 'small muted' }, t('t.models'), el('i', {}, c.modelSentences.join(' '))));
+      if (c.targetWords) {
+        const tw = el('p', { class: 'small muted' }, t('t.targets'));
+        c.targetWords.forEach((w, i) => {
+          if (i) tw.append(', ');
+          tw.append(el('b', {}, w.word), ' ', picNode(w.picture) || w.picture);
+        });
+        box.append(tw);
+      }
+      const list = el('ol', { class: 'small', style: 'padding-left: 20px; margin: 8px 0;' });
+      for (const q of c.questions) {
+        const parts = [];
+        if (q.kind === 'choice' || q.kind === 'choicePic') {
+          parts.push(t('t.qCount', { n: q.items.length, s: q.items.length > 1 ? 's' : '' }));
+        } else if (q.kind === 'match') parts.push(t('t.matchN', { n: q.pairs.length }));
+        else if (q.kind === 'arrange') parts.push(t('t.arrangeOne'));
+        else if (q.kind === 'written') parts.push(t('t.writtenOne'));
+        list.append(el('li', {}, q.prompt, ' · ', el('span', { class: 'muted' }, parts.join(', '))));
+      }
+      box.append(list);
+      return box;
+    }
+
+    // --- assignment wizard (Select -> preview match -> due date -> Assign) ---
+    async function startAssign(set) {
+      const body = el('div', {});
+      const modal = openModal(t('t.assignTitle', { topic: topicName(set.topic) }), body);
+      body.append(loadingState(t('t.matching')));
+      let matches;
+      try {
+        matches = (await api(`/api/teacher/classes/${state.classId}/match?setId=${set.id}`)).matches;
+      } catch (err) {
+        clear(body);
+        body.append(alertBox('error', tServer(err.message)));
+        return;
+      }
+      clear(body);
+
+      const selection = new Map(); // pupilId -> level
+      const flagged = [];
+      const unregistered = [];
+      for (const m of matches) {
+        if (!m.template) { flagged.push(m.pupil); continue; }
+        if (!m.pupil.registered) unregistered.push(m.pupil);
+        selection.set(m.pupil.id, m.template.level);
+      }
+
+      // group by level, with counts
+      const byLevel = { words: [], sentences: [], paragraphs: [] };
+      for (const m of matches) if (m.template) byLevel[m.template.level].push(m);
+
+      body.append(el('p', { class: 'small' }, t('t.assignHelp')));
+
+      for (const lvl of ['words', 'sentences', 'paragraphs']) {
+        const list = byLevel[lvl];
+        if (!list.length) continue;
+        const tmpl = list[0].template;
+        body.append(el('h4', { style: 'margin: 12px 0 6px;' },
+          `${levelName(lvl)} · ${tmpl.title} `,
+          el('span', { class: 'badge' }, t('t.pupils', { n: list.length })),
+        ));
+        const rows = el('div', {});
+        for (const m of list) {
+          const cb = el('input', { type: 'checkbox', checked: '' });
+          cb.addEventListener('change', () => {
+            if (cb.checked) selection.set(m.pupil.id, lvlSel.value);
+            else selection.delete(m.pupil.id);
+          });
+          const lvlSel = el('select', {},
+            el('option', { value: 'words' }, levelName('words')),
+            el('option', { value: 'sentences' }, levelName('sentences')),
+            el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+          );
+          lvlSel.value = lvl;
+          lvlSel.addEventListener('change', () => selection.set(m.pupil.id, lvlSel.value));
+          rows.append(el('div', { class: 'hw-row', style: 'padding: 8px 10px;' },
+            cb,
+            el('span', { style: 'font-weight: 600; flex: 1;' }, m.pupil.name,
+              !m.pupil.registered ? el('span', { class: 'badge muted', style: 'margin-left: 6px;' }, t('t.notRegBadge')) : null),
+            lvlSel,
+          ));
+        }
+        body.append(rows);
+      }
+
+      if (flagged.length) {
+        body.append(el('div', { class: 'alert warn mt' },
+          t('t.noLevelSkipped', { n: flagged.length, s: flagged.length > 1 ? 's' : '', names: flagged.map((p) => p.name).join(', ') })));
+      }
+      if (unregistered.length) {
+        body.append(el('p', { class: 'small muted' },
+          t('t.unregNote', { names: unregistered.map((p) => p.name).join(', ') })));
+      }
+
+      const dueInput = el('input', { type: 'date', required: '' });
+      const due = new Date(Date.now() + 7 * 864e5);
+      dueInput.value = due.toISOString().slice(0, 10);
+      const msg = el('div', {});
+      const assignBtn = el('button', { class: 'btn' }, t('t.assignBtn'));
+      assignBtn.addEventListener('click', async () => {
+        if (!dueInput.value) { clear(msg); msg.append(alertBox('error', t('t.errDue'))); return; }
+        const pupils = [...selection.entries()].map(([pupilId, level]) => ({ pupilId, level }));
+        if (!pupils.length) { clear(msg); msg.append(alertBox('error', t('t.errSelect'))); return; }
+        assignBtn.disabled = true; assignBtn.textContent = t('t.assigning');
+        try {
+          const r = await api('/api/teacher/assign', { method: 'POST', body: {
+            setId: set.id, classId: state.classId, dueDate: dueInput.value, pupils,
+          }});
+          clear(body);
+          body.append(
+            el('div', { class: 'state' },
+              el('h3', { style: 'margin: 4px 0;' }, t('t.assigned')),
+              el('p', {}, el('b', {}, t('t.received', { n: r.assigned, s: r.assigned > 1 ? 's' : '', topic: topicName(set.topic) }))),
+              el('p', { class: 'small muted' }, t('t.assignedSub', { date: fmtDate(dueInput.value) })),
+              el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.close')),
+            ),
+          );
+        } catch (err) {
+          clear(msg);
+          msg.append(alertBox('error', tServer(err.message)));
+          assignBtn.disabled = false; assignBtn.textContent = t('t.assignBtn');
+        }
+      });
+      body.append(el('hr', { class: 'sep' }),
+        el('div', { class: 'row' },
+          el('label', { class: 'field', style: 'margin: 0;' }, el('span', { class: 'small muted' }, t('common.dueDate')), dueInput),
+          assignBtn,
+        ),
+        msg,
+      );
+    }
+
+    // =====================================================================
+    // HOMEWORK MANAGER TAB
+    // =====================================================================
+    async function renderManager() {
+      tabContent.replaceChildren(loadingState());
+      try {
+        const { assignments } = await api(`/api/teacher/assignments?classId=${state.classId}`);
+        renderManagerDone(assignments);
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), renderManager));
+      }
+    }
+
+    function renderManagerDone(assignments) {
+      const root = el('div', {});
+      root.append(el('div', { class: 'page-head' },
+        el('div', {},
+          el('h1', {}, t('t.tab.manager')),
+          el('div', { class: 'sub' }, t('t.manager.sub')),
+        ),
+      ));
+      const grid = el('div', { class: 'grid wide' });
+      if (!assignments.length) {
+        grid.append(emptyState(t('t.manager.empty')));
+      }
+      for (const a of assignments) {
+        grid.append(el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', { class: 'pname' }, topicName(a.title)),
+            el('span', { class: 'badge' }, t('common.due') + ' ' + fmtDate(a.dueDate)),
+          ),
+          el('div', { class: 'pcard-stats' },
+            el('div', { class: 'stat-chip' }, t('t.assignedCount'), el('b', {}, a.assigned)),
+            el('div', { class: 'stat-chip' }, t('t.submittedCount'), el('b', {}, a.submitted)),
+            el('div', { class: 'stat-chip' }, t('t.awaitingCount'), el('b', {}, a.awaitingReview)),
+          ),
+          el('div', { class: 'pcard-actions' },
+            el('button', { class: 'btn secondary small', onclick: () => openAssignment(a) }, t('t.open')),
+          ),
+        ));
+      }
+      root.append(grid);
+      tabContent.replaceChildren(root);
+    }
+
+    async function openAssignment(a) {
+      const body = el('div', {});
+      const modal = openModal(`${topicName(a.title)} · ${t('common.due')} ${fmtDate(a.dueDate)}`, body);
+      body.append(loadingState());
+      let data;
+      try {
+        data = await api(`/api/teacher/assignments/${a.id}`);
+      } catch (err) {
+        clear(body); body.append(alertBox('error', tServer(err.message))); return;
+      }
+      clear(body);
+      const grid = el('div', { class: 'grid' });
+      if (!data.pupils.length) grid.append(emptyState(t('t.noPupils')));
+      for (const p of data.pupils) {
+        grid.append(el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', {},
+              el('div', { class: 'pname' }, p.name),
+              el('div', { class: 'pno' }, levelName(p.level) + ' · No. ' + p.studentNo),
+            ),
+            statusBadge(p.status),
+          ),
+          el('div', { class: 'pcard-stats' },
+            el('div', { class: 'stat-chip' }, t('t.score'), el('b', {}, p.score != null ? fmtPct(p.score) : t('common.notYet'))),
+            p.firstAttemptScore != null
+              ? el('div', { class: 'stat-chip' }, t('t.firstTry'), el('b', {}, fmtPct(p.firstAttemptScore)))
+              : null,
+            p.hints || p.retries
+              ? el('div', { class: 'stat-chip' }, t('t.hintsRetriesChip', { h: p.hints, r: p.retries }))
+              : null,
+          ),
+          el('div', { class: 'pcard-actions' },
+            p.needsReview && !p.reviewed
+              ? el('span', { class: 'badge warn' }, t('t.needsReview'))
+              : p.reviewed ? el('span', { class: 'badge ok' }, t('t.reviewed')) : null,
+            el('button', { class: 'btn secondary small', onclick: () => viewWork(p) }, t('t.viewWork')),
+          ),
+        ));
+      }
+      body.append(grid);
+
+      async function viewWork(p) {
+        const inner = el('div', {});
+        const m2 = openModal(`${p.name} · ${topicName(data.title)}`, inner);
+        inner.append(loadingState());
+        let wd;
+        try {
+          wd = await api(`/api/teacher/pupil-assignments/${p.id}`);
+        } catch (err) {
+          clear(inner); inner.append(alertBox('error', tServer(err.message))); return;
+        }
+        clear(inner);
+        renderViewWork(inner, wd, m2);
+      }
+    }
+
+    function renderViewWork(container, wd, modal) {
+      const c = wd.snapshot;
+      container.append(
+        el('div', { class: 'row mb' },
+          statusBadge(wd.status),
+          el('span', { class: 'badge level-' + wd.level }, levelName(wd.level)),
+          wd.score != null ? el('span', { class: 'badge ok' }, t('t.work.autoMarked') + fmtPct(wd.score)) : null,
+          wd.firstAttemptScore != null ? el('span', { class: 'badge muted' }, t('t.firstTry') + fmtPct(wd.firstAttemptScore)) : null,
+          el('span', { class: 'badge muted' }, t('t.hintsRetriesChip', { h: wd.hints, r: wd.retries })),
+        ),
+      );
+      if (c.reading) container.append(el('div', { class: 'qblock' },
+        el('div', { class: 'qkind' }, t('t.block.reading')),
+        el('p', {}, c.reading),
+      ));
+      if (c.modelSentences) container.append(el('div', { class: 'qblock' },
+        el('div', { class: 'qkind' }, t('t.block.models')),
+        el('p', {}, c.modelSentences.join(' ')),
+      ));
+      if (c.targetWords) {
+        const twRow = el('p', {});
+        c.targetWords.forEach((w, i) => {
+          if (i) twRow.append(' · ');
+          twRow.append(picNode(w.picture) || w.picture, ' ', el('b', {}, w.word));
+        });
+        container.append(el('div', { class: 'qblock' },
+          el('div', { class: 'qkind' }, t('t.block.targets')),
+          twRow,
+        ));
+      }
+
+      const detailMap = new Map();
+      for (const d of wd.marking.detail) detailMap.set(d.qid + ':' + d.prompt, d);
+
+      for (const q of c.questions) {
+        const block = el('div', { class: 'qblock' });
+        block.append(el('div', { class: 'qhead' },
+          el('span', { class: 'qkind' }, t({ match: 't.kind.match', choice: 't.kind.choice', choicePic: 't.kind.choicePic', arrange: 't.kind.arrange', written: 't.kind.written' }[q.kind] || 't.kind.choice')),
+          el('span', { class: 'small muted' }, q.prompt),
+        ));
+        const details = wd.marking.detail.filter((d) => d.qid === q.id);
+        if (q.kind === 'choice' || q.kind === 'choicePic') {
+          q.items.forEach((item, i) => {
+            const d = details[i];
+            const rqPrompt = el('div', { class: 'rq-prompt' });
+            if (item.picture) rqPrompt.append(picNode(item.picture) || `${item.picture} `);
+            rqPrompt.append(item.text);
+            const row = el('div', { class: 'review-q' },
+              rqPrompt,
+              el('div', { class: 'rq-ans' },
+                t('t.answer'), el('b', {}, d?.chosen ?? t('t.blank')),
+                ' · ',
+                verdict(d),
+              ),
+              d && !d.correct ? el('div', { class: 'small muted' }, t('t.correctIs'), el('b', {}, d.expected)) : null,
+            );
+            block.append(row);
+          });
+        } else if (q.kind === 'match') {
+          q.pairs.forEach((pair, i) => {
+            const d = details[i];
+            const rqPrompt = el('div', { class: 'rq-prompt' });
+            rqPrompt.append(picNode(pair.picture) || pair.picture, t('t.toWord'));
+            block.append(el('div', { class: 'review-q' },
+              rqPrompt,
+              el('div', { class: 'rq-ans' }, t('t.answer'), el('b', {}, d?.chosen ?? t('t.blank')), ' · ', verdict(d)),
+              d && !d.correct ? el('div', { class: 'small muted' }, t('t.correctIs'), el('b', {}, d.expected)) : null,
+            ));
+          });
+        } else if (q.kind === 'arrange') {
+          const d = details[0];
+          block.append(el('div', { class: 'review-q' },
+            el('div', { class: 'rq-ans' }, t('t.sentence'), el('b', {}, d?.chosen ?? t('t.blank')), ' · ', verdict(d)),
+            d && !d.correct ? el('div', { class: 'small muted' }, t('t.correctIs'), el('b', {}, d.expected)) : null,
+          ));
+        } else if (q.kind === 'written') {
+          const w = wd.marking.written.find((x) => x.qid === q.id);
+          block.append(el('div', { class: 'review-q' },
+            el('div', { class: 'rq-prompt' }, q.prompt),
+            el('div', { class: 'rq-ans' },
+              w && w.answer
+                ? el('span', {}, '“', el('i', {}, w.answer), '”')
+                : el('span', { class: 'muted' }, t('t.noWritten')),
+              ' · ',
+              el('span', { class: 'verdict review' }, t('t.needsTeacherReview')),
+            ),
+            q.example ? el('div', { class: 'small muted' }, q.example) : null,
+          ));
+        }
+        container.append(block);
+      }
+
+      // feedback field
+      const ta = el('textarea', { placeholder: t('t.feedbackPh') });
+      ta.value = wd.feedback || '';
+      const saveMsg = el('div', {});
+      const saveBtn = el('button', { class: 'btn' }, t('t.saveFeedback'));
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        try {
+          await api(`/api/teacher/pupil-assignments/${wd.id}/feedback`, { method: 'POST', body: { feedback: ta.value } });
+          clear(saveMsg);
+          saveMsg.append(alertBox('success', t('t.feedbackSaved')));
+        } catch (err) {
+          clear(saveMsg);
+          saveMsg.append(alertBox('error', tServer(err.message)));
+        }
+        saveBtn.disabled = false;
+      });
+      container.append(
+        el('div', { class: 'card', style: 'margin-top: 14px;' },
+          el('h4', { style: 'margin: 0 0 8px;' }, t('t.teacherFeedback')),
+          ta,
+          el('div', { class: 'row mt' }, saveBtn),
+          saveMsg,
+        ),
+      );
+    }
+
+    function verdict(d) {
+      if (!d || d.chosen === null || d.chosen === undefined) return el('span', { class: 'verdict review' }, t('t.notAttempted'));
+      if (d.correct === true) return el('span', { class: 'verdict ok' }, t('t.correct'));
+      if (d.correct === false) return el('span', { class: 'verdict bad' }, t('t.incorrect'));
+      return el('span', { class: 'verdict review' }, t('t.needsTeacherReview'));
+    }
+
+    // =====================================================================
+    // EDIT PUPIL / EDIT HOMEWORK TEMPLATE
+    // =====================================================================
+    function addPupil() {
+      const body = el('div', {});
+      const modal = openModal(t('t.addPupil'), body);
+      body.append(
+        el('p', { class: 'small muted', style: 'margin-top: 0;' }, t('t.chooseMethod')),
+        el('div', { class: 'grid' },
+          el('button', { class: 'card clickable', style: 'text-align: left;', onclick: () => showManual() },
+            el('div', { class: 'pname' }, t('t.addManual')),
+            el('div', { class: 'small muted', style: 'margin-top: 4px;' }, t('t.addManualDesc')),
+          ),
+          el('button', { class: 'card clickable', style: 'text-align: left;', onclick: () => showBulk() },
+            el('div', { class: 'pname' }, t('t.addBulk')),
+            el('div', { class: 'small muted', style: 'margin-top: 4px;' }, t('t.addBulkDesc')),
+          ),
+        ),
+      );
+
+      function showManual() {
+        clear(body);
+        const nameIn = el('input', { type: 'text', maxlength: '80' });
+        const noIn = el('input', { type: 'text', maxlength: '20' });
+        const lvl = el('select', {},
+          el('option', { value: '' }, t('level.set')),
+          el('option', { value: 'words' }, levelName('words')),
+          el('option', { value: 'sentences' }, levelName('sentences')),
+          el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+        );
+        const msg = el('div', {});
+        const save = el('button', { class: 'btn' }, t('common.save'));
+        save.addEventListener('click', async () => {
+          save.disabled = true;
+          try {
+            await api('/api/teacher/pupils', { method: 'POST', body: {
+              classId: state.classId, name: nameIn.value, studentNo: noIn.value, proficiency: lvl.value || null,
+            } });
+            modal.close();
+            renderStudents();
+          } catch (err) {
+            clear(msg); msg.append(alertBox('error', tServer(err.message)));
+            save.disabled = false;
+          }
+        });
+        body.append(
+          el('button', { class: 'btn small secondary', onclick: () => addPupil() }, t('common.back')),
+          el('label', { class: 'field mt' }, el('span', {}, t('t.pupilName')), nameIn),
+          el('label', { class: 'field' }, el('span', {}, t('t.studentNo')), noIn),
+          el('label', { class: 'field' }, el('span', {}, t('t.proficiency')), lvl),
+          msg,
+          el('div', { class: 'modal-actions' },
+            el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+            save,
+          ),
+        );
+      }
+
+      function showBulk() {
+        clear(body);
+        const msg = el('div', {});
+        const previewBox = el('div', {});
+        const importWrap = el('div', {});
+
+        const promptText = t('t.bulkPrompt');
+        const copyBtn = el('button', { class: 'btn small secondary' }, t('te.copy'));
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(promptText);
+            copyBtn.textContent = t('te.copied');
+          } catch { /* clipboard unavailable */ }
+          setTimeout(() => { copyBtn.textContent = t('te.copy'); }, 1500);
+        });
+
+        const ta = el('textarea', {
+          'data-i18n-placeholder': 't.bulkPaste',
+          placeholder: t('t.bulkPaste'),
+          style: 'min-height: 140px; font-family: ui-monospace, Consolas, monospace; font-size: 0.875rem;',
+        });
+        ta.placeholder = t('t.bulkPaste');
+
+        let parsedRows = null;
+        const parseBtn = el('button', { class: 'btn small secondary' }, t('t.bulkParse'));
+        parseBtn.addEventListener('click', () => {
+          clear(previewBox); clear(importWrap); clear(msg);
+          parsedRows = null;
+          const rows = parseRows(ta.value);
+          if (!rows) { msg.append(alertBox('error', t('t.bulkInvalidJson'))); return; }
+          parsedRows = rows.map((r) => ({
+            name: String(r.name ?? '').trim(),
+            studentNo: String(r.studentNo ?? r.student_no ?? '').trim(),
+            proficiency: mapProf(r.proficiency),
+          }));
+          if (!parsedRows.length) { msg.append(alertBox('error', t('t.bulkEmpty'))); return; }
+          const seen = new Set();
+          parsedRows.forEach((row) => {
+            if (!row.name || !row.studentNo) row._problem = t('t.bulkRowInvalid');
+            else if (seen.has(row.studentNo)) row._problem = t('t.bulkRowDup');
+            seen.add(row.studentNo);
+          });
+          const importable = parsedRows.filter((r) => !r._problem).length;
+          previewBox.append(
+            el('p', { class: 'small', style: 'font-weight: 600; margin: 10px 0 6px;' },
+              t('t.bulkParsed', { n: parsedRows.length })),
+            listRows(parsedRows),
+          );
+          if (importable > 0) {
+            const importBtn = el('button', { class: 'btn' }, t('t.bulkImport', { n: importable }));
+            importBtn.addEventListener('click', async () => {
+              importBtn.disabled = true;
+              try {
+                const r = await api('/api/teacher/pupils/bulk', { method: 'POST', body: {
+                  classId: state.classId, pupils: parsedRows,
+                } });
+                clear(body);
+                body.append(
+                  el('div', { class: 'state' },
+                    el('h3', { style: 'margin: 4px 0;' }, t('t.bulkDone', { created: r.created })),
+                    el('p', { class: 'muted' }, t('t.bulkImported', { created: r.created, skipped: r.skipped })),
+                    el('button', { class: 'btn mt', onclick: () => { modal.close(); renderStudents(); } }, t('common.back')),
+                  ),
+                );
+              } catch (err) {
+                clear(msg);
+                msg.append(alertBox('error', tServer(err.message)));
+                importBtn.disabled = false;
+              }
+            });
+            importWrap.append(importBtn);
+          }
+        });
+
+        function listRows(rows) {
+          const list = el('div', {});
+          rows.forEach((row) => {
+            list.append(el('div', { class: 'hw-row', style: 'padding: 8px 10px;' },
+              el('div', { class: 'grow' },
+                el('span', { style: 'font-weight: 600;' }, row.name || '?'),
+                ' ', el('span', { class: 'small muted' }, row.studentNo || '?'),
+                row.proficiency ? levelBadge(row.proficiency) : null,
+              ),
+              row._problem
+                ? el('span', { class: 'badge bad' }, row._problem)
+                : el('span', { class: 'badge ok' }, '✓'),
+            ));
+          });
+          return list;
+        }
+
+        function parseRows(text) {
+          const t0 = String(text || '');
+          const start = t0.indexOf('[');
+          const end = t0.lastIndexOf(']');
+          if (start === -1 || end <= start) return null;
+          try {
+            const arr = JSON.parse(t0.slice(start, end + 1));
+            return Array.isArray(arr) ? arr : null;
+          } catch { return null; }
+        }
+
+        function mapProf(v) {
+          const k = String(v ?? '').toLowerCase();
+          return {
+            weak: 'words', lemah: 'words', words: 'words',
+            intermediate: 'sentences', sederhana: 'sentences', sentences: 'sentences',
+            advance: 'paragraphs', advanced: 'paragraphs', mahir: 'paragraphs', paragraphs: 'paragraphs',
+          }[k] || null;
+        }
+
+        body.append(
+          el('button', { class: 'btn small secondary', onclick: () => addPupil() }, t('common.back')),
+          el('h4', { class: 'mt' }, t('t.bulkHow')),
+          el('ol', { class: 'small muted', style: 'padding-left: 18px; margin: 6px 0;' },
+            el('li', {}, t('t.bulkStep1')),
+            el('li', {}, t('t.bulkStep2')),
+            el('li', {}, t('t.bulkStep3')),
+          ),
+          el('div', { class: 'qblock' },
+            el('div', { class: 'row spread' },
+              el('span', { class: 'qkind' }, 'ChatGPT prompt'),
+              copyBtn,
+            ),
+            el('p', { class: 'small', style: 'margin: 6px 0 0; font-family: ui-monospace, Consolas, monospace;' }, promptText),
+          ),
+          el('label', { class: 'field' }, el('span', {}, t('t.bulkPaste')), ta),
+          el('div', { class: 'row' }, parseBtn),
+          previewBox,
+          importWrap,
+          msg,
+        );
+      }
+    }
+
+    function editPupil(s) {
+      const body = el('div', {});
+      const modal = openModal(t('t.editPupil'), body);
+      const nameIn = el('input', { type: 'text', value: s.name, maxlength: '80' });
+      const noIn = el('input', { type: 'text', value: s.studentNo, maxlength: '20' });
+      const msg = el('div', {});
+      const save = el('button', { class: 'btn' }, t('common.save'));
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+          await api(`/api/teacher/pupils/${s.id}`, { method: 'PATCH', body: { name: nameIn.value, studentNo: noIn.value } });
+          modal.close();
+          renderStudents();
+        } catch (err) {
+          clear(msg); msg.append(alertBox('error', tServer(err.message)));
+          save.disabled = false;
+        }
+      });
+      body.append(
+        el('label', { class: 'field' }, el('span', {}, t('t.pupilName')), nameIn),
+        el('label', { class: 'field' }, el('span', {}, t('t.studentNo')), noIn),
+        msg,
+        el('div', { class: 'modal-actions' },
+          el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+          save,
+        ),
+      );
+    }
+
+    const shuffleArr = (arr) => [...arr].sort(() => Math.random() - 0.5);
+    let newQCounter = 0;
+
+    async function editTemplate(tmpl) {
+      await openTemplateEditor({ tmplId: tmpl.id, setTopic: tmpl.topic || tmpl.title });
+    }
+
+    // Shared template editor: loads an existing template (tmplId) or starts a
+    // blank draft (for a brand-new band template on a topic set).
+    async function openTemplateEditor({ tmplId = null, level = 'words', setTopic = '', seed = null } = {}) {
+      const body = el('div', {});
+      const modal = openModal(tmplId ? t('t.editTemplate') : t('studio.manual'), body);
+      let full = { title: setTopic ? `${setTopic}: ${levelName(level)}` : '', activityType: 'Homework', minutes: 10, content: { questions: [] } };
+      if (tmplId) {
+        body.append(loadingState());
+        try {
+          full = await api(`/api/teacher/templates/${tmplId}/preview`);
+        } catch (err) {
+          clear(body); body.append(alertBox('error', tServer(err.message))); return;
+        }
+        clear(body);
+      }
+
+      const c = seed ? seed : full.content;
+      const draft = {
+        title: full.title,
+        activityType: full.activityType,
+        minutes: full.minutes,
+        reading: typeof c.reading === 'string' ? c.reading : null,
+        models: Array.isArray(c.modelSentences) ? c.modelSentences.join('\n') : null,
+        words: Array.isArray(c.targetWords) ? c.targetWords.map((w) => ({ ...w })) : null,
+        questions: JSON.parse(JSON.stringify(c.questions || [])),
+      };
+
+      const titleIn = el('input', { type: 'text', value: draft.title, maxlength: '120' });
+      const typeIn = el('input', { type: 'text', value: draft.activityType, maxlength: '80' });
+      const minIn = el('input', { type: 'number', value: draft.minutes, min: '1', max: '180' });
+      body.append(
+        el('label', { class: 'field' }, el('span', {}, t('te.title')), titleIn),
+        el('div', { class: 'row' },
+          el('label', { class: 'field', style: 'flex: 1; min-width: 200px;' }, el('span', {}, t('te.activity')), typeIn),
+          el('label', { class: 'field', style: 'width: 120px;' }, el('span', {}, t('te.minutes')), minIn),
+        ),
+        el('div', { class: 'alert info', style: 'font-size: 0.8125rem;' }, t('te.snapshotNote')),
+      );
+
+      if (draft.reading !== null) {
+        const ta = el('textarea', { style: 'min-height: 100px;' });
+        ta.value = draft.reading;
+        draft._reading = () => ta.value.trim();
+        body.append(el('label', { class: 'field' }, el('span', {}, t('te.reading')), ta));
+      }
+      if (draft.models !== null) {
+        const ta = el('textarea', { style: 'min-height: 90px;' });
+        ta.value = draft.models;
+        draft._models = () => ta.value.split('\n').map((x) => x.trim()).filter(Boolean);
+        body.append(el('label', { class: 'field' }, el('span', {}, t('te.models')), ta));
+      }
+      if (draft.words) {
+        const wordsBox = el('div', {});
+        const redrawWords = () => {
+          clear(wordsBox);
+          draft.words.forEach((w, i) => {
+            const pic = makePicField(w.picture, (v) => { w.picture = v; }, 64);
+            const word = el('input', { type: 'text', value: w.word, style: 'flex: 1; min-width: 110px;' });
+            const mean = el('input', { type: 'text', value: w.meaning, style: 'flex: 2; min-width: 150px;' });
+            word.addEventListener('input', () => { w.word = word.value; });
+            mean.addEventListener('input', () => { w.meaning = mean.value; });
+            wordsBox.append(el('div', { class: 'row', style: 'margin-bottom: 6px;' },
+              pic, word, mean,
+              el('button', { class: 'btn small danger', 'aria-label': t('te.remove'), onclick: () => { draft.words.splice(i, 1); redrawWords(); } }, '✕'),
+            ));
+          });
+          wordsBox.append(el('button', { class: 'btn small secondary', onclick: () => { draft.words.push({ word: '', picture: '❓', meaning: '' }); redrawWords(); } }, t('te.addWord')));
+        };
+        redrawWords();
+        body.append(el('h4', { class: 'mt' }, t('te.words')), wordsBox);
+      }
+
+      // ---- questions ----
+      const qBox = el('div', {});
+      const redrawQuestions = () => {
+        clear(qBox);
+        draft.questions.forEach((q, qi) => qBox.append(questionEditor(q, qi)));
+      };
+
+      const addQuestion = (kind) => {
+        newQCounter += 1;
+        const base = { id: 'q' + Date.now().toString(36) + newQCounter, kind, prompt: '' };
+        if (kind === 'choice') Object.assign(base, { items: [{ text: '', options: ['', '', '', ''], answer: '' }] });
+        else if (kind === 'choicePic') Object.assign(base, { items: [{ picture: '❓', options: ['', '', ''], answer: '' }] });
+        else if (kind === 'match') Object.assign(base, { pairs: [{ picture: '❓', answer: '' }, { picture: '❓', answer: '' }, { picture: '❓', answer: '' }], prompt: 'Match each picture to the correct word.' });
+        else if (kind === 'arrange') Object.assign(base, { sentence: '', hint: '', prompt: 'Arrange the words to make a sentence.' });
+        draft.questions.push(base);
+      };
+
+      function questionEditor(q, qi) {
+        const block = el('div', { class: 'qblock' });
+        block.append(el('div', { class: 'qhead' },
+          el('span', { class: 'qkind' }, t('te.questionN', { n: qi + 1 })),
+          el('span', { class: 'row' },
+            el('button', { class: 'btn small secondary', title: t('te.moveUp'), 'aria-label': t('te.moveUp'), onclick: () => { if (qi > 0) { const tmp = draft.questions[qi - 1]; draft.questions[qi - 1] = draft.questions[qi]; draft.questions[qi] = tmp; redrawQuestions(); } } }, '↑'),
+            el('button', { class: 'btn small danger', 'aria-label': t('te.remove'), onclick: () => { draft.questions.splice(qi, 1); redrawQuestions(); } }, '✕'),
+          ),
+        ));
+        const promptIn = el('input', { type: 'text', value: q.prompt || '' });
+        promptIn.addEventListener('input', () => { q.prompt = promptIn.value; });
+        block.append(el('label', { class: 'field', style: 'margin: 8px 0;' }, el('span', {}, t('te.prompt')), promptIn));
+
+        if (q.kind === 'choice' || q.kind === 'choicePic') {
+          const itemsBox = el('div', {});
+          const redrawItems = () => {
+            clear(itemsBox);
+            q.items.forEach((item, ii) => {
+              const holder = el('div', { style: 'border-top: 2px solid var(--muted-2); padding: 10px 0;' });
+              if (q.kind === 'choicePic') {
+                const pic = makePicField(item.picture || '', (v) => { item.picture = v; }, 90);
+                holder.append(el('div', { class: 'field' }, el('span', {}, t('te.picture')), pic));
+              } else {
+                const txt = el('input', { type: 'text', value: item.text || '' });
+                txt.addEventListener('input', () => { item.text = txt.value; });
+                holder.append(el('label', { class: 'field' }, el('span', {}, t('te.text')), txt));
+              }
+              const opts = el('div', {});
+              const redrawOpts = () => {
+                clear(opts);
+                item.options.forEach((opt, oi) => {
+                  const inp = el('input', { type: 'text', value: opt, style: 'flex: 1; min-width: 140px;' });
+                  inp.addEventListener('input', () => {
+                    const was = item.options[oi];
+                    item.options[oi] = inp.value;
+                    if (item.answer === was) item.answer = inp.value; // keep the tick on the edited option
+                  });
+                  const radio = el('input', { type: 'radio', name: q.id + '-' + ii });
+                  radio.checked = item.answer === opt;
+                  radio.addEventListener('change', () => { if (radio.checked) item.answer = inp.value; });
+                  opts.append(el('div', { class: 'row', style: 'margin-bottom: 4px;' },
+                    radio, inp,
+                    el('button', { class: 'btn small danger', 'aria-label': t('te.remove'), onclick: () => { item.options.splice(oi, 1); redrawOpts(); } }, '✕'),
+                  ));
+                });
+                opts.append(el('button', { class: 'btn small secondary', onclick: () => { item.options.push(''); redrawOpts(); } }, t('te.addOption')));
+              };
+              redrawOpts();
+              holder.append(el('div', { class: 'field' }, el('span', { class: 'small muted' }, t('te.options') + ' · ' + t('te.correctHint')), opts));
+              if (q.items.length > 1) {
+                holder.append(el('button', { class: 'btn small danger', onclick: () => { q.items.splice(ii, 1); redrawItems(); } }, t('te.removeItem')));
+              }
+              itemsBox.append(holder);
+            });
+            itemsBox.append(el('button', { class: 'btn small secondary', onclick: () => {
+              q.items.push(q.kind === 'choicePic' ? { picture: '❓', options: ['', '', ''], answer: '' } : { text: '', options: ['', '', '', ''], answer: '' });
+              redrawItems();
+            } }, t('te.addItem')));
+          };
+          redrawItems();
+          block.append(itemsBox);
+        } else if (q.kind === 'match') {
+          const pairsBox = el('div', {});
+          const redrawPairs = () => {
+            clear(pairsBox);
+            q.pairs.forEach((p, pi) => {
+              const pic = makePicField(p.picture, (v) => { p.picture = v; }, 80);
+              const word = el('input', { type: 'text', value: p.answer, style: 'flex: 1; min-width: 140px;' });
+              word.addEventListener('input', () => { p.answer = word.value; });
+              pairsBox.append(el('div', { class: 'row', style: 'margin-bottom: 6px;' },
+                el('span', { class: 'small muted' }, t('te.pair') + ' ' + (pi + 1)),
+                pic, word,
+                el('button', { class: 'btn small danger', 'aria-label': t('te.remove'), onclick: () => { q.pairs.splice(pi, 1); redrawPairs(); } }, '✕'),
+              ));
+            });
+            pairsBox.append(el('button', { class: 'btn small secondary', onclick: () => { q.pairs.push({ picture: '❓', answer: '' }); redrawPairs(); } }, t('te.addPair')));
+          };
+          redrawPairs();
+          block.append(pairsBox);
+        } else if (q.kind === 'arrange') {
+          // Seed data stores tiles + answer; derive the editable sentence once.
+          if (q.sentence === undefined) q.sentence = Array.isArray(q.tiles) ? q.tiles.join(' ') : '';
+          const sent = el('input', { type: 'text', value: q.sentence });
+          sent.addEventListener('input', () => { q.sentence = sent.value; });
+          const hint = el('input', { type: 'text', value: q.hint || '' });
+          hint.addEventListener('input', () => { q.hint = hint.value; });
+          block.append(
+            el('label', { class: 'field' }, el('span', {}, t('te.sentence')), sent),
+            el('label', { class: 'field' }, el('span', {}, t('te.hint')), hint),
+          );
+        } else if (q.kind === 'written') {
+          const ex = el('input', { type: 'text', value: q.example || '' });
+          ex.addEventListener('input', () => { q.example = ex.value; });
+          block.append(el('label', { class: 'field' }, el('span', {}, t('te.example')), ex));
+        }
+        return block;
+      }
+      redrawQuestions();
+      body.append(el('h4', { class: 'mt' }, t('te.questions')), qBox);
+
+      const kindSel = el('select', {},
+        el('option', { value: 'choice' }, t('te.kind.choice')),
+        el('option', { value: 'choicePic' }, t('te.kind.choicePic')),
+        el('option', { value: 'match' }, t('te.kind.match')),
+        el('option', { value: 'arrange' }, t('te.kind.arrange')),
+        el('option', { value: 'written' }, t('te.kind.written')),
+      );
+      body.append(el('div', { class: 'row mt' },
+        kindSel,
+        el('button', { class: 'btn small secondary', onclick: () => { addQuestion(kindSel.value); redrawQuestions(); } }, t('te.addQuestion')),
+      ));
+
+      const msg = el('div', {});
+      const saveBtn = el('button', { class: 'btn' }, t('common.save'));
+      saveBtn.addEventListener('click', async () => {
+        const content = {};
+        if (draft.words) content.targetWords = draft.words.filter((w) => w.word.trim() !== '');
+        if (draft._models) content.modelSentences = draft._models();
+        if (draft._reading) content.reading = draft._reading();
+        content.questions = draft.questions.map((q) => {
+          const out = { id: q.id, kind: q.kind, prompt: (q.prompt || '').trim() };
+          if (q.kind === 'choice' || q.kind === 'choicePic') {
+            out.items = q.items.map((it) => {
+              const clean = { options: it.options.map((o) => o.trim()).filter(Boolean), answer: (it.answer || '').trim() };
+              if (q.kind === 'choice') clean.text = (it.text || '').trim();
+              else clean.picture = (it.picture || '').trim() || '❓';
+              return clean;
+            });
+          } else if (q.kind === 'match') {
+            out.pairs = q.pairs.map((p) => ({ picture: (p.picture || '').trim() || '❓', answer: (p.answer || '').trim() }));
+            out.wordBank = shuffleArr(out.pairs.map((p) => p.answer));
+          } else if (q.kind === 'arrange') {
+            const sentence = (q.sentence || '').replace(/\s+/g, ' ').trim();
+            out.tiles = sentence.split(' ');
+            out.answer = sentence;
+            if (q.hint) out.hint = q.hint.trim();
+          } else if (q.kind === 'written') {
+            if (q.example) out.example = q.example.trim();
+          }
+          return out;
+        });
+        for (const [i, q] of content.questions.entries()) {
+          if (q.kind === 'choice' || q.kind === 'choicePic') {
+            for (const it of q.items) {
+              if (it.options.length < 2) { clear(msg); msg.append(alertBox('error', t('te.errOptions', { n: i + 1 }))); return; }
+              if (!it.options.includes(it.answer)) { clear(msg); msg.append(alertBox('error', t('te.errAnswer', { n: i + 1 }))); return; }
+            }
+          }
+          if (q.kind === 'match' && q.pairs.some((p) => !p.answer)) { clear(msg); msg.append(alertBox('error', t('te.errPairs', { n: i + 1 }))); return; }
+          if (q.kind === 'arrange' && !q.answer) { clear(msg); msg.append(alertBox('error', t('te.errSentence', { n: i + 1 }))); return; }
+          if (q.kind === 'written' && !q.prompt) { clear(msg); msg.append(alertBox('error', t('te.errPrompt', { n: i + 1 }))); return; }
+        }
+        saveBtn.disabled = true;
+        try {
+          const payload = {
+            title: titleIn.value, activityType: typeIn.value, minutes: Number(minIn.value) || draft.minutes, content,
+          };
+          if (tmplId) await api(`/api/teacher/templates/${tmplId}`, { method: 'PATCH', body: payload });
+          else await api('/api/teacher/templates', { method: 'POST', body: { setId: state.studioSetId, level, ...payload } });
+          clear(msg);
+          msg.append(alertBox('success', t('studio.saved')));
+          setTimeout(() => { modal.close(); if (state.tab === 'studio') renderStudio(); else renderAssign(); }, 500);
+        } catch (err) {
+          clear(msg);
+          msg.append(alertBox('error', tServer(err.message)));
+          saveBtn.disabled = false;
+        }
+      });
+      body.append(el('div', { class: 'modal-actions' }, saveBtn), msg);
+    }
+
+    // =====================================================================
+    // PUPIL PROGRESS MODAL
+    // =====================================================================
+    async function showProgress(s) {
+      const body = el('div', {});
+      const modal = openModal(t('t.progress', { name: s.name }), body);
+      body.append(loadingState());
+      let data;
+      try {
+        data = await api(`/api/teacher/pupils/${s.id}/progress`);
+      } catch (err) {
+        clear(body); body.append(alertBox('error', tServer(err.message))); return;
+      }
+      clear(body);
+
+      const lvlSel = el('select', { style: 'max-width: 170px;' },
+        el('option', { value: '' }, t('level.set')),
+        el('option', { value: 'words' }, levelName('words')),
+        el('option', { value: 'sentences' }, levelName('sentences')),
+        el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+      );
+      lvlSel.value = data.pupil.proficiency || '';
+      const lvlMsg = el('span', { class: 'small muted' }, t('t.levelFuture'));
+      const saveBtn = el('button', { class: 'btn small', disabled: '' }, t('common.save'));
+      saveBtn.addEventListener('click', async () => {
+        if (!lvlSel.value || lvlSel.value === data.pupil.proficiency) { saveBtn.disabled = true; return; }
+        saveBtn.disabled = true;
+        try {
+          await api(`/api/teacher/pupils/${s.id}/proficiency`, { method: 'POST', body: { proficiency: lvlSel.value } });
+          data.pupil.proficiency = lvlSel.value;
+          lvlMsg.textContent = t('t.levelSaved', { level: levelName(lvlSel.value) });
+        } catch (err) {
+          lvlMsg.textContent = tServer(err.message);
+          saveBtn.disabled = false;
+        }
+      });
+      lvlSel.addEventListener('change', () => {
+        saveBtn.disabled = !lvlSel.value || lvlSel.value === data.pupil.proficiency;
+      });
+
+      const completed = data.homework.filter((h) => h.status === 'submitted').length;
+      body.append(
+        el('div', { class: 'row spread mb' },
+          el('div', { class: 'row' },
+            el('span', { class: 'badge' }, data.pupil.registered ? t('common.registered') : t('common.notRegistered')),
+            data.className ? el('span', { class: 'badge muted' }, data.className) : null,
+          ),
+          el('div', { class: 'row' },
+            lvlSel,
+            saveBtn,
+            lvlMsg,
+          ),
+        ),
+      );
+
+      body.append(el('div', { class: 'pcard-stats' },
+        el('div', { class: 'stat-chip' }, t('t.hwDone'), el('b', {}, `${completed}/${data.homework.length}`)),
+      ));
+
+      body.append(el('h4', {}, t('t.resultsByLevel')));
+      const anyData = ['words', 'sentences', 'paragraphs'].some((lvl) => {
+        const st = data.analytics[lvl];
+        return st.units > 0 || st.writtenTotal > 0;
+      });
+      if (!anyData) {
+        body.append(el('p', { class: 'muted small' }, t('t.notEnoughData')));
+      } else {
+        const grid = el('div', { class: 'grid' });
+        for (const lvl of ['words', 'sentences', 'paragraphs']) {
+          const st = data.analytics[lvl];
+          if (st.units === 0 && st.writtenTotal === 0) continue;
+          const rows = [];
+          if (st.units > 0) {
+            rows.push(el('div', { class: 'stat-chip' }, t('t.accuracy'), el('b', {}, fmtPct(st.correct / st.units)), ` (${st.correct}/${st.units})`));
+          }
+          if (st.firstUnits > 0) {
+            rows.push(el('div', { class: 'stat-chip' }, t('t.firstTry'), el('b', {}, fmtPct(st.firstCorrect / st.firstUnits)), ` (${st.firstCorrect}/${st.firstUnits})`));
+          }
+          if (st.writtenTotal > 0) {
+            rows.push(el('div', { class: 'stat-chip' }, t('t.writtenReviewed'), el('b', {}, `${st.writtenReviewed}/${st.writtenTotal}`)));
+          }
+          grid.append(el('div', { class: 'card' },
+            el('div', { class: 'pname' }, levelName(lvl)),
+            el('div', { class: 'pcard-stats' }, rows),
+          ));
+        }
+        body.append(grid);
+      }
+
+      body.append(el('h4', { class: 'mt' }, t('t.recent')));
+      if (!data.homework.length) {
+        body.append(el('p', { class: 'muted small' }, t('t.notEnoughData')));
+      } else {
+        const list = el('div', {});
+        for (const h of data.homework.slice(0, 6)) {
+          list.append(el('div', { class: 'hw-row' },
+            el('div', { class: 'grow' },
+              el('div', { class: 'hw-title' }, topicName(h.title), ' ', levelBadge(h.level)),
+              el('div', { class: 'hw-meta' },
+                t('common.due') + ' ' + fmtDate(h.dueDate) +
+                (h.score != null ? t('t.scoreSuffix') + fmtPct(h.score) : '') +
+                (h.firstAttemptScore != null ? t('t.firstTrySuffix') + fmtPct(h.firstAttemptScore) : '') +
+                (h.hints || h.retries ? ' · ' + t('t.hintsRetries', { h: h.hints, r: h.retries }) : ''),
+              ),
+              h.feedback ? el('div', { class: 'hw-meta' }, t('t.feedbackLabel'), h.feedback) : null,
+            ),
+            statusBadge(h.status),
+          ));
+        }
+        body.append(list);
+      }
+
+      body.append(el('h4', { class: 'mt' }, t('t.recurring')));
+      if (!data.recurringErrors.length) {
+        body.append(el('p', { class: 'muted small' }, data.homework.length ? t('t.noRecurring') : t('t.notEnoughData')));
+      } else {
+        const ul = el('ul', { class: 'small', style: 'padding-left: 18px;' });
+        for (const e of data.recurringErrors.slice(0, 10)) {
+          ul.append(el('li', {}, t('t.recurringItem', { q: e.question, a: e.theirAnswer, c: e.correctAnswer })));
+        }
+        body.append(ul);
+      }
+    }
+
+    // =====================================================================
+    // HOMEWORK STUDIO TAB — create topics + templates, with an AI chatbox
+    // =====================================================================
+    async function renderStudio() {
+      tabContent.replaceChildren(loadingState());
+      let sets;
+      try {
+        sets = (await api('/api/teacher/templates')).sets;
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), renderStudio));
+        return;
+      }
+      const root = el('div', {});
+      root.append(
+        el('div', { class: 'page-head' },
+          el('div', {},
+            el('h1', {}, t('studio.tab')),
+            el('div', { class: 'sub' }, t('studio.sub')),
+          ),
+          el('button', { class: 'btn', onclick: () => newSetModal() }, '+ ' + t('studio.newSet')),
+        ),
+      );
+
+      const grid = el('div', { class: 'grid wide' });
+      for (const set of sets) {
+        const byLevel = { words: null, sentences: null, paragraphs: null };
+        for (const tpl of set.templates) byLevel[tpl.level] = tpl;
+        grid.append(el('div', { class: 'card' },
+          el('div', { class: 'pcard-top' },
+            el('div', { class: 'pname', style: 'font-size: 1.1rem;' }, set.icon + ' ' + topicName(set.topic)),
+            set.isDemo ? demoBadge() : null,
+          ),
+          el('div', { class: 'small muted mt' }, t('studio.level')),
+          el('ul', { class: 'small muted', style: 'margin: 6px 0; padding-left: 18px;' },
+            ['words', 'sentences', 'paragraphs'].map((lvl) => {
+              const tpl = byLevel[lvl];
+              return el('li', { style: 'margin-bottom: 4px;' },
+                `${levelName(lvl)}: `,
+                tpl
+                  ? el('span', { style: 'font-weight: 600;' }, `${tpl.questionCount} ${t('common.questions')}`)
+                  : el('span', { class: 'muted' }, t('studio.notBuilt')),
+                el('span', { class: 'row', style: 'display: inline-flex; margin-left: 8px; gap: 4px;' },
+                  tpl ? el('button', { class: 'btn small secondary', onclick: () => editTemplate(tpl) }, t('t.edit')) : null,
+                  tpl ? el('button', { class: 'btn small danger', onclick: () => deleteTemplate(set, lvl, tpl) }, t('studio.delete')) : null,
+                  el('button', { class: 'btn small', onclick: () => openStudioChooser(set, lvl) }, tpl ? t('studio.manual') : t('studio.createTemplate')),
+                ),
+              );
+            }),
+          ),
+        ));
+      }
+      if (!sets.length) grid.replaceChildren(emptyState(t('studio.noSets')));
+      root.append(grid);
+      tabContent.replaceChildren(root);
+    }
+
+    function newSetModal() {
+      const body = el('div', {});
+      const modal = openModal(t('studio.newSet'), body);
+      const nameIn = el('input', { type: 'text', maxlength: '80', placeholder: t('studio.setNamePh') });
+      const iconIn = el('input', { type: 'text', maxlength: '8', value: '📚', style: 'width: 100px; text-align: center;' });
+      const msg = el('div', {});
+      const create = el('button', { class: 'btn' }, t('studio.create'));
+      create.addEventListener('click', async () => {
+        create.disabled = true;
+        try {
+          const r = await api('/api/teacher/template-sets', { method: 'POST', body: { topic: nameIn.value, icon: iconIn.value } });
+          modal.close();
+          await renderStudio();
+          // open the AI assistant for the new topic
+          const fresh = (await api('/api/teacher/templates')).sets.find((st) => st.id === r.id);
+          if (fresh) openStudioChooser(fresh, 'words');
+        } catch (err) {
+          clear(msg); msg.append(alertBox('error', tServer(err.message))); create.disabled = false;
+        }
+      });
+      body.append(
+        el('label', { class: 'field' }, el('span', {}, t('studio.setName')), nameIn),
+        el('label', { class: 'field' }, el('span', {}, t('studio.icon')), iconIn),
+        msg,
+        el('div', { class: 'modal-actions' },
+          el('button', { class: 'btn secondary', onclick: () => modal.close() }, t('common.cancel')),
+          create,
+        ),
+      );
+    }
+
+    // Choose AI or manual for one band of a topic set.
+    function openStudioChooser(set, level) {
+      state.studioSetId = set.id;
+      state.studioTopic = set.topic;
+      const body = el('div', {});
+      const modal = openModal(`${set.icon} ${topicName(set.topic)} · ${levelName(level)}`, body);
+      body.append(
+        el('p', { class: 'small muted', style: 'margin-top: 0;' }, t('studio.chooseLevel')),
+        el('div', { class: 'grid' },
+          el('button', { class: 'card clickable', style: 'text-align: left;', onclick: () => { modal.close(); openAiChat(set, level); } },
+            el('div', { class: 'pname' }, '🤖 ' + t('studio.buildWith')),
+            el('div', { class: 'small muted', style: 'margin-top: 4px;' }, t('studio.aboutAi')),
+          ),
+          el('button', { class: 'card clickable', style: 'text-align: left;', onclick: () => { modal.close(); openTemplateEditor({ level, setTopic: set.topic }); } },
+            el('div', { class: 'pname' }, '✏️ ' + t('studio.buildManual')),
+            el('div', { class: 'small muted', style: 'margin-top: 4px;' }, t('studio.aboutManual')),
+          ),
+        ),
+      );
+    }
+
+    async function deleteTemplate(set, level, tpl) {
+      if (!confirm(t('studio.deleteConfirm'))) return;
+      try {
+        await api(`/api/teacher/templates/${tpl.id}`, { method: 'DELETE' });
+        await renderStudio();
+      } catch (err) {
+        tabContent.replaceChildren(errorState(tServer(err.message), renderStudio));
+      }
+    }
+
+    // ---- AI chatbox -----------------------------------------------------
+    // The "AI" here is a friendly offline assistant: it reads what the teacher
+    // types, extracts the topic/words/sentences, and builds structured
+    // homework that can be reviewed and edited in the manual editor before it
+    // is saved. No external service, no key, no cost.
+    function openAiChat(set, level) {
+      const body = el('div', { class: 'aichat' });
+      const modal = openModal(t('studio.ai') + ' · ' + levelName(level), body);
+      state.studioSetId = set.id;
+      state.studioTopic = set.topic;
+
+      const log = el('div', { class: 'aichat-log' });
+      const msgArea = el('div', {});
+      const input = el('input', { type: 'text', placeholder: t('studio.ai.inputPh') });
+      const levelSel = el('select', { style: 'max-width: 160px;' },
+        el('option', { value: 'words' }, levelName('words')),
+        el('option', { value: 'sentences' }, levelName('sentences')),
+        el('option', { value: 'paragraphs' }, levelName('paragraphs')),
+      );
+      levelSel.value = level;
+      levelSel.addEventListener('change', () => { level = levelSel.value; });
+
+      const bubble = (who, text) => {
+        const b = el('div', { class: 'aichat-bubble ' + who }, text);
+        log.append(b);
+        log.scrollTop = log.scrollHeight;
+        return b;
+      };
+
+      let pendingSpec = null;
+
+      const welcome = t('studio.ai.sub');
+      bubble('ai', welcome);
+
+      const send = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        bubble('user', text);
+        pendingSpec = parseHomeworkRequest(text, level, set.topic);
+        const spec = pendingSpec;
+        const summary = [
+          `${t('studio.ai.buildFor')} ${levelName(level)}`,
+          `${t('studio.setName')}: ${spec.topic}`,
+          spec.words.length ? `${spec.words.map((w) => w.word).join(', ')}` : '',
+          spec.sentences.length ? `${spec.sentences.length} ${t('te.models').toLowerCase()}` : '',
+        ].filter(Boolean).join(' · ');
+        bubble('ai', summary);
+        clear(msgArea);
+        msgArea.append(
+          el('div', { class: 'row mt' },
+            levelSel,
+            el('button', { class: 'btn small', onclick: build }, t('studio.ai.build')),
+          ),
+        );
+      };
+
+      const build = () => {
+        if (!pendingSpec) { bubble('ai', t('studio.ai.empty')); return; }
+        pendingSpec.level = level;
+        const result = generateHomework(pendingSpec);
+        if (result.error) { bubble('ai', result.error); return; }
+        clear(msgArea);
+        msgArea.append(
+          el('div', { class: 'alert success', style: 'margin: 10px 0;' },
+            `${result.title} · ${result.content.questions.length} ${t('common.questions')}`,
+          ),
+          el('div', { class: 'row' },
+            el('button', { class: 'btn', onclick: () => openTemplateEditor({ level, setTopic: set.topic, seed: result.content }) }, t('studio.ai.use')),
+            el('button', { class: 'btn secondary', onclick: build }, t('studio.ai.regenerate')),
+          ),
+          el('p', { class: 'small muted' }, t('studio.ai.note')),
+        );
+      };
+
+      const sendBtn = el('button', { class: 'btn' }, t('studio.ai.send'));
+      sendBtn.addEventListener('click', send);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+
+      body.append(
+        log,
+        msgArea,
+        el('div', { class: 'row', style: 'margin-top: 10px;' },
+          input,
+          sendBtn,
+        ),
+      );
+      input.focus();
+    }
+
+    // =====================================================================
+    // modal helper
+    // =====================================================================
+    function openModal(title, bodyEl) {
+      const back = el('div', { class: 'modal-back' });
+      const close = () => back.remove();
+      const box = el('div', { class: 'modal' },
+        el('div', { class: 'row spread' },
+          el('h3', {}, title),
+          el('button', { class: 'btn small secondary', 'aria-label': 'Close', onclick: close }, '✕'),
+        ),
+        bodyEl,
+      );
+      back.append(box);
+      back.addEventListener('click', (e) => { if (e.target === back) close(); });
+      document.body.append(back);
+      return { close, appendCloseButton: () => box.querySelector('.modal-actions') };
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pupil Registration · Year 6 English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div id="langSlot" class="lang-fixed"></div>
+  <div class="wrap" style="max-width: 540px; margin-top: 32px;">
+    <div class="card">
+      <h2 style="margin: 0 0 8px; font-size: 1.0625rem;" data-i18n="reg.title">Join your class</h2>
+
+      <!-- Step 1: class code -->
+      <section id="step1">
+        <p class="small muted" style="margin-top: 0;" data-i18n="reg.help1">Ask your teacher for your class code.</p>
+        <div id="step1msg"></div>
+        <form id="classForm">
+          <label class="field"><span data-i18n="reg.classCode">Class code</span>
+            <input type="text" id="classCode" data-i18n-placeholder="reg.classPh" placeholder="e.g. DEMO6B" autocapitalize="characters" required>
+          </label>
+          <button class="btn block" type="submit" data-i18n="reg.continue">Continue</button>
+        </form>
+      </section>
+
+      <!-- Step 2: pick name + reg code + credentials -->
+      <section id="step2" hidden>
+        <div id="step2msg"></div>
+        <p class="small muted" id="className" style="margin: 8px 0 10px;"></p>
+
+        <p class="small" style="margin: 0 0 6px;"><b>1.</b> <span data-i18n="reg.step1">Find and tap your name.</span></p>
+        <div id="names" class="reglist" style="margin-bottom: 14px;"></div>
+        <p class="small" style="margin: 0 0 12px;"><b>2.</b> <span data-i18n="reg.step2">Enter the registration code from your teacher.</span></p>
+        <p class="small" style="margin: 0 0 12px;"><b>3.</b> <span data-i18n="reg.step3">Choose a username and password.</span></p>
+        <form id="regForm">
+          <label class="field"><span data-i18n="reg.regCode">Teacher's registration code</span>
+            <input type="text" id="regCode" data-i18n-placeholder="reg.regCodePh" placeholder="6-letter code" autocapitalize="characters" required>
+          </label>
+          <label class="field"><span data-i18n="common.username">Username</span>
+            <input type="text" id="username" data-i18n-placeholder="reg.usernamePh" placeholder="e.g. aiman2013" autocomplete="off" required>
+          </label>
+          <label class="field"><span data-i18n="reg.password">Password (6+ characters)</span>
+            <input type="password" id="password" minlength="6" autocomplete="new-password" required>
+          </label>
+          <button class="btn block" type="submit" id="regBtn" data-i18n="reg.create">Create my account</button>
+        </form>
+      </section>
+
+      <!-- Step 3: success -->
+      <section id="step3" hidden>
+        <div class="state" style="padding: 28px 16px;">
+          <h3 style="margin: 0 0 4px; font-size: 1rem;" data-i18n="reg.done">You're registered</h3>
+          <p id="welcomeName" style="font-weight: 600; margin: 4px 0;"></p>
+          <p class="small muted" style="margin: 0 0 12px;" data-i18n="reg.doneHelp">You can now sign in and see your homework.</p>
+          <a class="btn" href="/student.html" data-i18n="reg.go">Go to my homework</a>
+        </div>
+      </section>
+
+      <p class="small mt" style="margin-bottom: 0;"><a href="/" data-i18n="common.back">← Back</a></p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, el, clear, alertBox } from './js/common.js';
+    import { t, tServer, applyI18n, langToggle } from './js/i18n.js';
+
+    document.getElementById('langSlot').append(langToggle());
+    applyI18n();
+
+    const step1 = document.getElementById('step1');
+    const step2 = document.getElementById('step2');
+    const step3 = document.getElementById('step3');
+    const step1msg = document.getElementById('step1msg');
+    const step2msg = document.getElementById('step2msg');
+
+    let pupils = [];
+    let selectedId = null;
+
+    // Support /register.html?class=CODE links from the teacher page.
+    const initialCode = new URLSearchParams(location.search).get('class');
+    if (initialCode) document.getElementById('classCode').value = initialCode;
+
+    document.getElementById('classForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      step1msg.innerHTML = '';
+      try {
+        const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
+        pupils = data.pupils;
+        document.getElementById('className').textContent = t('reg.classPrefix') + data.className;
+        renderNames();
+        step1.hidden = true;
+        step2.hidden = false;
+      } catch (err) {
+        step1msg.append(alertBox('error', tServer(err.message)));
+      }
+    });
+
+    function renderNames() {
+      const box = document.getElementById('names');
+      clear(box);
+      for (const p of pupils) {
+        const btn = el('button', {
+          type: 'button',
+          class: 'regname' + (p.registered ? ' taken' : '') + (selectedId === p.id ? ' sel' : ''),
+          disabled: p.registered ? '' : undefined,
+          onclick: () => { selectedId = p.id; renderNames(); },
+        },
+          el('span', {}, p.name + (p.sameName ? ` · ${p.studentNo}` : '')),
+          p.registered ? el('span', { class: 'tag' }, t('reg.taken')) : el('span', { class: 'tag' }, p.studentNo),
+        );
+        box.append(btn);
+      }
+    }
+
+    document.getElementById('regForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      step2msg.innerHTML = '';
+      if (!selectedId) {
+        step2msg.append(alertBox('error', t('reg.pickFirst')));
+        return;
+      }
+      const btn = document.getElementById('regBtn');
+      btn.disabled = true; btn.textContent = t('reg.creating');
+      try {
+        const r = await api('/api/register', { method: 'POST', body: {
+          classCode: classCode.value.trim().toUpperCase(),
+          regCode: regCode.value.trim().toUpperCase(),
+          pupilId: selectedId,
+          username: username.value,
+          password: password.value,
+        }});
+        document.getElementById('welcomeName').textContent = t('reg.welcomePrefix') + r.displayName + '!';
+        step2.hidden = true;
+        step3.hidden = false;
+      } catch (err) {
+        // Failed registration must not reserve the name — refresh the list state.
+        step2msg.append(alertBox('error', tServer(err.message)));
+        try {
+          const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
+          pupils = data.pupils;
+          if (pupils.find(p => p.id === selectedId)?.registered) selectedId = null;
+          renderNames();
+        } catch { /* keep current list */ }
+        btn.disabled = false; btn.textContent = t('reg.create');
+      }
+    });
+  </script>
+</body>
+</html>

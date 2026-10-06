@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teacher Login · Year 6 English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div id="langSlot" class="lang-fixed"></div>
+  <div class="wrap" style="max-width: 400px; margin-top: 64px;">
+    <div class="card">
+      <h2 style="margin: 0 0 12px; font-size: 1.0625rem;" data-i18n="login.teacherTitle">Teacher login</h2>
+      <div id="msg"></div>
+      <form id="loginForm">
+        <label class="field"><span data-i18n="login.codeLabel">Access code</span>
+          <input type="text" id="code" class="code-input" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="&bull;&bull;&bull;&bull;" required>
+        </label>
+        <button class="btn block" type="submit" data-i18n="common.signIn">Sign in</button>
+      </form>
+      <button class="btn secondary block" id="demoBtn" data-i18n="login.demoBtn" hidden>Temporary demo access</button>
+      <p class="small muted center" id="demoNote" data-i18n="login.demoNote" style="margin: 8px 0 0;" hidden></p>
+      <p class="small muted mt" data-i18n="login.codeHint">Demo access code: 0000</p>
+      <p class="small" style="margin-bottom: 0;"><a href="/" data-i18n="common.back">← Back</a></p>
+    </div>
+  </div>
+  <script type="module">
+    import { api, alertBox } from './js/common.js';
+    import { t, tServer, applyI18n, langToggle } from './js/i18n.js';
+    document.getElementById('langSlot').append(langToggle());
+    applyI18n();
+
+    // Temporary demo access: one click, no password, 2-hour session.
+    const demoBtn = document.getElementById('demoBtn');
+    const demoNote = document.getElementById('demoNote');
+    fetch('/api/demo-status').then((r) => r.json()).then((st) => {
+      if (st.teacher) { demoBtn.hidden = false; demoNote.hidden = false; }
+    }).catch(() => { /* stay hidden when demo data is absent */ });
+    demoBtn.addEventListener('click', async () => {
+      demoBtn.disabled = true;
+      try {
+        const r = await api('/api/auth/demo-login', { method: 'POST', body: {} });
+        location.href = r.role === 'teacher' ? '/teacher.html' : '/student.html';
+      } catch (err) {
+        msg.append(alertBox('error', tServer(err.message)));
+        demoBtn.disabled = false;
+      }
+    });
+
+    const form = document.getElementById('loginForm');
+    const msg = document.getElementById('msg');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.innerHTML = '';
+      const btn = form.querySelector('button');
+      btn.disabled = true; btn.textContent = t('common.signingIn');
+      try {
+        await api('/api/auth/code-login', { method: 'POST', body: { code: code.value.trim() } });
+        location.href = '/teacher.html';
+      } catch (err) {
+        msg.append(alertBox('error', tServer(err.message)));
+        btn.disabled = false; btn.textContent = t('common.signIn');
+      }
+    });
+    // digits only, and auto-submit once 4 digits are in
+    code.addEventListener('input', () => {
+      code.value = code.value.replace(/\D/g, '').slice(0, 4);
+      if (code.value.length === 4) form.requestSubmit();
+    });
+  </script>
+</body>
+</html>

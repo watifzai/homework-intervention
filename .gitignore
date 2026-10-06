@@ -1,0 +1,12 @@
+# Runtime data — never publish pupil records or sessions
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local scratch (throwaway test servers/scripts)
+.tmp/
+
+# OS noise
+Thumbs.db
+.DS_Store

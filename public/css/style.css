@@ -170,6 +170,7 @@ h1, h2, h3, h4 { letter-spacing: -0.02em; }
 
 /* Landing hero decoration */
 .hero-wrap { position: relative; overflow: hidden; }
+.hero-wrap::before, .hero-wrap::after { pointer-events: none; }
 .hero-wrap::before {
   content: ''; position: absolute; width: 460px; height: 460px;
   border-radius: 50%; background: var(--blue); opacity: 0.06;

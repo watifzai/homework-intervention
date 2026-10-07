@@ -1,0 +1,12 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: year6-english-intervention
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # must be >= 22.5 for the built-in node:sqlite module
+      - key: NODE_VERSION
+        value: 22.11.0

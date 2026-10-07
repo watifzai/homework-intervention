@@ -27,6 +27,12 @@ npm run verify
 
 Open [http://localhost:3000](http://localhost:3000). Both login pages have a **Temporary demo access** button — one click into the demo teacher account or a demo pupil (Ryan Tan, with sample homework), no password needed; sessions expire after 2 hours (server-enforced). The buttons hide automatically when no demo account exists.
 
+## Deploy to Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/watifzai/homework-intervention)
+
+One click signs you in with GitHub and creates a free web service from this repo's `render.yaml`. **Note:** free-tier storage is ephemeral — the SQLite database (including pupil records) resets whenever the service restarts or redeploys. Keep real class records on a paid plan with a persistent disk, or run the app locally.
+
 ## Demo credentials
 
 A demo teacher and two demo classes are created on first start. All demo rows carry `is_demo = 1` and are clearly labelled in the UI, separate from real class records.

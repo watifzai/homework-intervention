@@ -9,4 +9,5 @@ services:
     envVars:
       # must be >= 22.5 for the built-in node:sqlite module
       - key: NODE_VERSION
-        value: 22.11.0
+        # node:sqlite no longer needs --experimental-sqlite from Node 22.13 onward
+        value: 22.22.0

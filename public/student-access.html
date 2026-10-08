@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Student QR Sign In · Year 6 English</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div id="langSlot" class="lang-fixed"></div>
+  <main class="wrap" style="max-width: 460px; margin-top: 64px;">
+    <section class="card center">
+      <h2 style="margin: 0 0 8px; font-size: 1.15rem;" data-i18n="qrLogin.title">Signing you in</h2>
+      <p id="status" class="muted" data-i18n="qrLogin.wait">Checking your personal QR card…</p>
+      <div id="message" aria-live="polite"></div>
+      <a id="back" class="btn secondary" href="/" data-i18n="common.back" hidden>← Back</a>
+    </section>
+  </main>
+  <script type="module">
+    import { api, alertBox } from './js/common.js';
+    import { t, tServer, applyI18n, langToggle } from './js/i18n.js';
+
+    document.getElementById('langSlot').append(langToggle());
+    applyI18n();
+
+    const status = document.getElementById('status');
+    const message = document.getElementById('message');
+    const back = document.getElementById('back');
+    const classCode = new URLSearchParams(location.search).get('class');
+    const secret = new URLSearchParams(location.hash.slice(1));
+    const pupilId = Number(secret.get('pupil'));
+    const pin = secret.get('pin');
+
+    // Remove the personal PIN from the address bar before making any request.
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+
+    try {
+      if (!classCode || !Number.isInteger(pupilId) || pupilId < 1 || !/^\d{6}$/.test(pin || '')) {
+        throw new Error(t('qrLogin.invalid'));
+      }
+      const result = await api('/api/auth/qr-login', {
+        method: 'POST',
+        body: { classCode, pupilId, pin },
+      });
+      status.textContent = t('qrLogin.welcome', { name: result.displayName });
+      location.replace('/student.html');
+    } catch (error) {
+      status.textContent = t('qrLogin.failed');
+      message.replaceChildren(alertBox('error', tServer(error.message)));
+      back.hidden = false;
+    }
+  </script>
+</body>
+</html>

@@ -83,9 +83,10 @@ async function main() {
   const { data: cardData } = await T('GET', `/api/teacher/registration-cards?classId=${cls.id}`);
   const pinFor = id => cardData.cards.find(c => c.id === id).pin;
   ok('every pupil has a unique six-digit PIN', cardData.cards.length === 7 && cardData.cards.every(c => /^\d{6}$/.test(c.pin)) && new Set(cardData.cards.map(c => c.pin)).size === 7);
-  ok('QR links include correct class, pupil and PIN', cardData.cards.every(c => {
+  ok('QR links open passwordless sign-in with correct class, pupil and PIN', cardData.cards.every(c => {
     const url = new URL(c.url); const hash = new URLSearchParams(url.hash.slice(1));
-    return url.searchParams.get('class') === cls.code && hash.get('pupil') === String(c.id) && hash.get('pin') === c.pin;
+    return url.pathname === '/student-access.html' && url.searchParams.get('class') === cls.code
+      && hash.get('pupil') === String(c.id) && hash.get('pin') === c.pin;
   }));
   ok('QR cards include each name below the QR', cardData.cards.every(c => {
     const svg = Buffer.from(c.qr.split(',')[1], 'base64').toString();
@@ -387,10 +388,28 @@ async function main() {
   ok('pupil cannot edit pupil records', r.status === 403);
   r = await T('POST', '/api/teacher/pupils', { classId: cls.id, name: 'New Kid', studentNo: '6B020', proficiency: 'words' });
   ok('teacher can add pupil', r.status === 201);
+  const newKidId = r.data.id;
   const { data: students5 } = await T('GET', `/api/teacher/students?classId=${cls.id}`);
   ok('added pupil appears with level', students5.students.some((x) => x.name === 'New Kid' && x.proficiency === 'words'));
   r = await client()('GET', '/api/register/DEMO6B');
   ok('added pupil appears in registration list', r.data.pupils.some((x) => x.name === 'New Kid' && x.registered === false));
+  const { data: newCards } = await T('GET', `/api/teacher/registration-cards?classId=${cls.id}`);
+  const newKidCard = newCards.cards.find((card) => card.id === newKidId);
+  const NewKidQr = client();
+  const wrongQrPin = newKidCard.pin === '000000' ? '000001' : '000000';
+  r = await NewKidQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: wrongQrPin });
+  ok('QR sign-in rejects the wrong personal PIN', r.status === 403);
+  r = await NewKidQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: newKidCard.pin });
+  ok('QR signs in without username or password', r.status === 200 && r.data.role === 'pupil' && r.data.displayName === 'New Kid');
+  r = await NewKidQr('GET', '/api/pupil/homework');
+  ok('QR session opens the pupil dashboard', r.status === 200);
+  const RepeatQr = client();
+  r = await RepeatQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: newKidCard.pin });
+  const linkedAccounts = dbModule.one(
+    'SELECT COUNT(*) AS c FROM accounts a JOIN pupils p ON p.account_id = a.id WHERE p.id = ?',
+    newKidId
+  ).c;
+  ok('repeat scans reuse the same pupil account', r.status === 200 && linkedAccounts === 1);
   r = await T('POST', '/api/teacher/pupils', { classId: cls.id, name: 'Other Kid', studentNo: '6B020' });
   ok('duplicate student number blocked on add', r.status === 409);
   r = await P('POST', '/api/teacher/pupils', { classId: cls.id, name: 'Nope', studentNo: '6B021' });

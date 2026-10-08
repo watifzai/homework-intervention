@@ -283,6 +283,60 @@ route('GET', '/api/register/:classCode', async (req, res, { classCode }) => {
 // inside a transaction means exactly one concurrent registration can win; the
 // UNIQUE(account_id) constraint backstops everything else.
 const pinAttempts = new Map();
+
+function verifyPupilPin(pupil, pin) {
+  const now = Date.now();
+  for (const [key, value] of pinAttempts) if (value.until <= now) pinAttempts.delete(key);
+  const attempt = pinAttempts.get(pupil.id) || { count: 0, until: now + 15 * 60 * 1000 };
+  if (attempt.count >= 10) throw new ApiError(429, 'Too many incorrect PIN attempts. Try again in 15 minutes.');
+  if (!/^\d{6}$/.test(String(pin).trim()) || String(pin).trim() !== pupil.registration_pin) {
+    attempt.count++;
+    pinAttempts.set(pupil.id, attempt);
+    throw new ApiError(403, 'Incorrect student PIN. Ask your teacher for your own QR card.');
+  }
+  pinAttempts.delete(pupil.id);
+}
+
+// A personal QR card is the pupil credential. The PIN stays in the URL
+// fragment (never in the HTTP request URL) and the page exchanges it for an
+// HttpOnly session. First scan creates the internal pupil account; later scans
+// sign into that same account on any device without a username or password.
+route('POST', '/api/auth/qr-login', async (req, res) => {
+  const { classCode, pupilId, pin } = await readBody(req);
+  if (!classCode || !pupilId || !pin) throw new ApiError(400, 'This QR card is incomplete');
+
+  const accountId = tx(() => {
+    const cls = one('SELECT * FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
+    if (!cls) throw new ApiError(404, 'Class not found');
+    const pupil = one('SELECT * FROM pupils WHERE id = ? AND class_id = ?', Number(pupilId), cls.id);
+    if (!pupil) throw new ApiError(404, 'Pupil not found in this class');
+    verifyPupilPin(pupil, pin);
+    if (pupil.account_id) return pupil.account_id;
+
+    let username;
+    do { username = `qr_${pupil.id}_${randomBytes(5).toString('hex')}`; }
+    while (one('SELECT id FROM accounts WHERE username = ?', username));
+    const id = run(
+      'INSERT INTO accounts (username, pass_hash, role, display_name, is_demo) VALUES (?,?,?,?,?)',
+      username, hashPassword(randomBytes(32).toString('hex')), 'pupil', pupil.name, pupil.is_demo
+    ).lastInsertRowid;
+    const linked = run('UPDATE pupils SET account_id = ? WHERE id = ? AND account_id IS NULL', id, pupil.id);
+    if (linked.changes) return id;
+
+    // Another scan won the race. Reuse its account and remove this orphan.
+    run('DELETE FROM accounts WHERE id = ?', id);
+    const current = one('SELECT account_id FROM pupils WHERE id = ?', pupil.id);
+    if (!current?.account_id) throw new ApiError(409, 'Please scan the QR card again');
+    return current.account_id;
+  });
+
+  const { token } = createSession(accountId);
+  send(res, 200, { ok: true, role: 'pupil', displayName: pupilName(accountId) }, {
+    'Set-Cookie': sessionCookie(token),
+    'Cache-Control': 'no-store',
+  });
+});
+
 route('POST', '/api/register', async (req, res) => {
   const { classCode, regCode, pupilId, username, password } = await readBody(req);
   if (!classCode || !regCode || !pupilId || !username || !password) {
@@ -299,16 +353,7 @@ route('POST', '/api/register', async (req, res) => {
     if (!cls) throw new ApiError(404, 'Class not found');
     const pupil = one('SELECT * FROM pupils WHERE id = ? AND class_id = ?', Number(pupilId), cls.id);
     if (!pupil) throw new ApiError(404, 'Pupil not found in this class');
-    const now = Date.now();
-    for (const [key, value] of pinAttempts) if (value.until <= now) pinAttempts.delete(key);
-    const attempt = pinAttempts.get(pupil.id) || { count: 0, until: now + 15 * 60 * 1000 };
-    if (attempt.count >= 10) throw new ApiError(429, 'Too many incorrect PIN attempts. Try again in 15 minutes.');
-    if (!/^\d{6}$/.test(String(regCode).trim()) || String(regCode).trim() !== pupil.registration_pin) {
-      attempt.count++;
-      pinAttempts.set(pupil.id, attempt);
-      throw new ApiError(403, 'Incorrect student PIN. Ask your teacher for your own 6-digit PIN.');
-    }
-    pinAttempts.delete(pupil.id);
+    verifyPupilPin(pupil, regCode);
     if (pupil.account_id) throw new ApiError(409, 'This name is already registered');
     const exists = one('SELECT id FROM accounts WHERE username = ?', uname);
     if (exists) throw new ApiError(409, 'That username is taken. Try another one.');
@@ -350,14 +395,14 @@ async function registrationCards(req) {
   const origin = process.env.RENDER_EXTERNAL_URL || `http://${req.headers.host}`;
   const cards = [];
   for (const p of rows) {
-    const url = new URL('/register.html', origin);
+    const url = new URL('/student-access.html', origin);
     url.searchParams.set('class', p.class_code);
     // The fragment keeps the PIN out of HTTP request URLs and referrers.
     url.hash = new URLSearchParams({ pupil: String(p.id), pin: p.registration_pin }).toString();
     const qr = await QRCode.toString(url.href, { type: 'svg', width: 600, margin: 4, errorCorrectionLevel: 'M' });
     const xml = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;' }[c]));
     const nameLines = p.name.match(/.{1,28}(?:\s|$)|.{1,28}/g) || [p.name];
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940"><rect width="720" height="940" rx="24" fill="white"/>${qr.replace('<svg ', '<svg x="60" y="20" ')}<g text-anchor="middle" fill="#172c40" font-family="Arial, sans-serif">${nameLines.map((line,i) => `<text x="360" y="${650+i*36}" font-size="30" font-weight="700">${xml(line.trim())}</text>`).join('')}<text x="360" y="790" font-size="22">${xml(p.class_name)} · No. ${xml(p.student_no)}</text><text x="360" y="841" font-size="30" letter-spacing="5">PIN: ${p.registration_pin}</text><text x="360" y="895" font-size="20">Scan to register · Imbas untuk daftar</text></g></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940"><rect width="720" height="940" rx="24" fill="white"/>${qr.replace('<svg ', '<svg x="60" y="20" ')}<g text-anchor="middle" fill="#172c40" font-family="Arial, sans-serif">${nameLines.map((line,i) => `<text x="360" y="${650+i*36}" font-size="30" font-weight="700">${xml(line.trim())}</text>`).join('')}<text x="360" y="790" font-size="22">${xml(p.class_name)} · No. ${xml(p.student_no)}</text><text x="360" y="841" font-size="30" letter-spacing="5">PIN: ${p.registration_pin}</text><text x="360" y="895" font-size="20">Scan to sign in · Imbas untuk log masuk</text></g></svg>`;
     cards.push({ id: p.id, name: p.name, studentNo: p.student_no,
       className: p.class_name, classCode: p.class_code, pin: p.registration_pin,
       registered: !!p.account_id, url: url.href, svg });
@@ -378,9 +423,9 @@ route('GET', '/api/teacher/registration-cards.zip', async (req, res) => {
   for (const card of cards) {
     const filename = `${card.classCode}-${card.id}-${card.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.svg`;
     files[filename] = strToU8(card.svg);
-    html.push(`<article><img src="${filename}" alt="${escape(card.name)} — registration card"></article>`);
+    html.push(`<article><img src="${filename}" alt="${escape(card.name)} — sign-in card"></article>`);
   }
-  files['print-cards.html'] = strToU8(`<!doctype html><html><meta charset="utf-8"><title>Student registration cards</title><style>body{font:16px system-ui;display:grid;grid-template-columns:repeat(2,1fr);gap:20px}article{text-align:center;border:1px dashed #777;padding:8px;break-inside:avoid}img{width:100%;max-width:300px;height:auto}@media print{body{gap:8mm}}</style><body>${html.join('')}</body></html>`);
+  files['print-cards.html'] = strToU8(`<!doctype html><html><meta charset="utf-8"><title>Student sign-in cards</title><style>body{font:16px system-ui;display:grid;grid-template-columns:repeat(2,1fr);gap:20px}article{text-align:center;border:1px dashed #777;padding:8px;break-inside:avoid}img{width:100%;max-width:300px;height:auto}@media print{body{gap:8mm}}</style><body>${html.join('')}</body></html>`);
   res.writeHead(200, { 'Content-Type': 'application/zip', 'Cache-Control': 'no-store',
     'Content-Disposition': 'attachment; filename="student-qr-codes.zip"' });
   res.end(Buffer.from(zipSync(files)));
@@ -553,8 +598,8 @@ route('POST', '/api/teacher/pupils/bulk', async (req, res) => {
   send(res, 201, { ok: true, created, skipped: skipped.length, skippedRows: skipped });
 });
 
-// Add a new pupil to a class namelist. They then register themselves with
-// the class code + their personal six-digit PIN, claiming this record.
+// Add a new pupil to a class namelist. Their personal QR card signs them into
+// this record; the manual registration flow remains available as a fallback.
 route('POST', '/api/teacher/pupils', async (req, res) => {
   const user = requireRole(req, 'teacher');
   const { classId, name, studentNo, proficiency } = await readBody(req);

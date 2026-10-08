@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>Pupil Registration · Year 6 English</title>
+  <title>Pupil Sign In · Year 6 English</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,7 +15,7 @@
   <div id="langSlot" class="lang-fixed"></div>
   <div class="wrap" style="max-width: 540px; margin-top: 32px;">
     <div class="card">
-      <h2 style="margin: 0 0 8px; font-size: 1.0625rem;" data-i18n="reg.title">Join your class</h2>
+      <h2 style="margin: 0 0 8px; font-size: 1.0625rem;" data-i18n="reg.title">Open your homework</h2>
 
       <!-- Step 1: class code -->
       <section id="step1">
@@ -29,7 +29,7 @@
         </form>
       </section>
 
-      <!-- Step 2: pick name + reg code + credentials -->
+      <!-- Step 2: pick name + personal PIN -->
       <section id="step2" hidden>
         <div id="step2msg"></div>
         <p class="small muted" id="className" style="margin: 8px 0 10px;"></p>
@@ -37,27 +37,20 @@
         <p class="small" style="margin: 0 0 6px;"><b>1.</b> <span data-i18n="reg.step1">Find and tap your name.</span></p>
         <div id="names" class="reglist" style="margin-bottom: 14px;"></div>
         <p class="small" style="margin: 0 0 12px;"><b>2.</b> <span data-i18n="reg.step2">Enter your own 6-digit PIN from your teacher.</span></p>
-        <p class="small" style="margin: 0 0 12px;"><b>3.</b> <span data-i18n="reg.step3">Choose a username and password.</span></p>
         <form id="regForm">
           <label class="field"><span data-i18n="reg.regCode">Your 6-digit PIN</span>
             <input type="text" id="regCode" data-i18n-placeholder="reg.regCodePh" placeholder="6-digit PIN" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required>
           </label>
-          <label class="field"><span data-i18n="common.username">Username</span>
-            <input type="text" id="username" data-i18n-placeholder="reg.usernamePh" placeholder="e.g. aiman2013" autocomplete="off" required>
-          </label>
-          <label class="field"><span data-i18n="reg.password">Password (6+ characters)</span>
-            <input type="password" id="password" minlength="6" autocomplete="new-password" required>
-          </label>
-          <button class="btn block" type="submit" id="regBtn" data-i18n="reg.create">Create my account</button>
+          <button class="btn block" type="submit" id="regBtn" data-i18n="reg.create">Open my homework</button>
         </form>
       </section>
 
       <!-- Step 3: success -->
       <section id="step3" hidden>
         <div class="state" style="padding: 28px 16px;">
-          <h3 style="margin: 0 0 4px; font-size: 1rem;" data-i18n="reg.done">You're registered</h3>
+          <h3 style="margin: 0 0 4px; font-size: 1rem;" data-i18n="reg.done">You're signed in</h3>
           <p id="welcomeName" style="font-weight: 600; margin: 4px 0;"></p>
-          <p class="small muted" style="margin: 0 0 12px;" data-i18n="reg.doneHelp">You can now sign in and see your homework.</p>
+          <p class="small muted" style="margin: 0 0 12px;" data-i18n="reg.doneHelp">Opening your homework now.</p>
           <a class="btn" href="/student.html" data-i18n="reg.go">Go to my homework</a>
         </div>
       </section>
@@ -101,17 +94,13 @@
           const invited = pupils.find(p => p.id === invitedId);
           if (!invited) throw new Error(t('reg.invalidQr'));
           pupils = [invited];
-          selectedId = invited.registered ? null : invited.id;
-          if (invited.registered) {
-            step2msg.replaceChildren(alertBox('info', t('reg.alreadyQr')),
-              el('a', { class: 'btn', href: '/student-login.html' }, t('reg.signIn')));
-            document.getElementById('regForm').hidden = true;
-          }
+          selectedId = invited.id;
         }
         document.getElementById('className').textContent = t('reg.classPrefix') + data.className;
         renderNames();
         step1.hidden = true;
         step2.hidden = false;
+        if (invitedId && /^\d{6}$/.test(invitedPin || '')) document.getElementById('regForm').requestSubmit();
       } catch (err) {
         step1msg.append(alertBox('error', tServer(err.message)));
       }
@@ -124,7 +113,6 @@
         const btn = el('button', {
           type: 'button',
           class: 'regname' + (p.registered ? ' taken' : '') + (selectedId === p.id ? ' sel' : ''),
-          disabled: p.registered ? '' : undefined,
           onclick: () => { selectedId = p.id; renderNames(); },
         },
           el('span', {}, p.name + (p.sameName ? ` · ${p.studentNo}` : '')),
@@ -144,24 +132,21 @@
       const btn = document.getElementById('regBtn');
       btn.disabled = true; btn.textContent = t('reg.creating');
       try {
-        const r = await api('/api/register', { method: 'POST', body: {
+        const r = await api('/api/auth/qr-login', { method: 'POST', body: {
           classCode: classCode.value.trim().toUpperCase(),
-          regCode: regCode.value.trim().toUpperCase(),
+          pin: regCode.value.trim(),
           pupilId: selectedId,
-          username: username.value,
-          password: password.value,
         }});
         document.getElementById('welcomeName').textContent = t('reg.welcomePrefix') + r.displayName + '!';
         step2.hidden = true;
         step3.hidden = false;
+        location.replace('/student.html');
       } catch (err) {
-        // Failed registration must not reserve the name — refresh the list state.
         step2msg.append(alertBox('error', tServer(err.message)));
         try {
           const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
           pupils = data.pupils;
           if (invitedId) pupils = pupils.filter(p => p.id === invitedId);
-          if (pupils.find(p => p.id === selectedId)?.registered) selectedId = null;
           renderNames();
         } catch { /* keep current list */ }
         btn.disabled = false; btn.textContent = t('reg.create');

@@ -97,6 +97,10 @@ async function main() {
   ok('ZIP includes all student cards and printable sheet', Object.keys(files).filter(f => f.endsWith('.svg')).length === 7 && strFromU8(files['print-cards.html']).includes('Registration') === false && !!files['print-cards.html']);
   ok('unauthenticated users cannot download PINs', (await client()('GET', '/api/teacher/registration-cards')).status === 401);
   ok('unauthenticated users cannot download QR ZIP', (await client()('GET', '/api/teacher/registration-cards.zip')).status === 401);
+  const registrationPage = fs.readFileSync(path.join(__dirname, '..', 'public', 'register.html'), 'utf8');
+  ok('registration page needs no username or password',
+    !registrationPage.includes('id="username"') && !registrationPage.includes('id="password"')
+      && registrationPage.includes('/api/auth/qr-login'));
   ok('class PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: cls.regCode, pupilId: aiman[0].id, username:'classpin', password:'pass123'})).status === 403);
   ok('another pupil PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: pinFor(aiman[1].id), pupilId: aiman[0].id, username:'wrongpin', password:'pass123'})).status === 403);
 

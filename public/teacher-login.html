@@ -22,9 +22,6 @@
         </label>
         <button class="btn block" type="submit" data-i18n="common.signIn">Sign in</button>
       </form>
-      <button class="btn secondary block" id="demoBtn" data-i18n="login.demoBtn" hidden>Temporary demo access</button>
-      <p class="small muted center" id="demoNote" data-i18n="login.demoNote" style="margin: 8px 0 0;" hidden></p>
-      <p class="small muted mt" data-i18n="login.codeHint">Demo access code: 0000</p>
       <p class="small" style="margin-bottom: 0;"><a href="/" data-i18n="common.back">← Back</a></p>
     </div>
   </div>
@@ -33,23 +30,6 @@
     import { t, tServer, applyI18n, langToggle } from './js/i18n.js';
     document.getElementById('langSlot').append(langToggle());
     applyI18n();
-
-    // Temporary demo access: one click, no password, 2-hour session.
-    const demoBtn = document.getElementById('demoBtn');
-    const demoNote = document.getElementById('demoNote');
-    fetch('/api/demo-status').then((r) => r.json()).then((st) => {
-      if (st.teacher) { demoBtn.hidden = false; demoNote.hidden = false; }
-    }).catch(() => { /* stay hidden when demo data is absent */ });
-    demoBtn.addEventListener('click', async () => {
-      demoBtn.disabled = true;
-      try {
-        const r = await api('/api/auth/demo-login', { method: 'POST', body: {} });
-        location.href = r.role === 'teacher' ? '/teacher.html' : '/student.html';
-      } catch (err) {
-        msg.append(alertBox('error', tServer(err.message)));
-        demoBtn.disabled = false;
-      }
-    });
 
     const form = document.getElementById('loginForm');
     const msg = document.getElementById('msg');

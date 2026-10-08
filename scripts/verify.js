@@ -106,6 +106,9 @@ async function main() {
   ok('student login page requires only the personal PIN',
     studentLoginPage.includes('id="pin"') && studentLoginPage.includes('/api/auth/pin-login')
       && !studentLoginPage.includes('id="username"') && !studentLoginPage.includes('id="password"'));
+  ok('student login includes a camera QR scanner',
+    studentLoginPage.includes('id="scanBtn"') && studentLoginPage.includes('getUserMedia')
+      && studentLoginPage.includes('BarcodeDetector') && studentLoginPage.includes('/api/auth/qr-login'));
   ok('class PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: cls.regCode, pupilId: aiman[0].id, username:'classpin', password:'pass123'})).status === 403);
   ok('another pupil PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: pinFor(aiman[1].id), pupilId: aiman[0].id, username:'wrongpin', password:'pass123'})).status === 403);
 

@@ -8,6 +8,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .scan-btn{margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px}
+    .scanner{position:fixed;inset:0;z-index:50;background:rgba(8,24,34,.92);padding:24px;display:grid;place-items:center}
+    .scanner[hidden]{display:none}
+    .scanner-panel{width:min(92vw,480px);background:#fff;border-radius:20px;padding:16px;text-align:center}
+    .scanner-view{position:relative;overflow:hidden;border-radius:16px;background:#0a1820;aspect-ratio:1/1}
+    .scanner-view video{width:100%;height:100%;object-fit:cover;display:block}
+    .scanner-frame{position:absolute;inset:14%;border:4px solid #fff;border-radius:22px;box-shadow:0 0 0 999px rgba(0,0,0,.22);pointer-events:none}
+    .scanner-close{margin-top:12px}
+  </style>
 </head>
 <body>
   <div class="bg-scene" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -23,8 +33,17 @@
         </label>
         <button class="btn block" type="submit" data-i18n="common.signIn">Sign in</button>
       </form>
+      <button class="btn secondary block scan-btn" type="button" id="scanBtn"><span aria-hidden="true">📷</span><span data-i18n="login.scanQr">Scan QR code</span></button>
       <p class="small" style="margin-bottom: 0;"><a href="/" data-i18n="common.back">← Back</a></p>
     </div>
+  </div>
+  <div class="scanner" id="scanner" hidden>
+    <section class="scanner-panel" role="dialog" aria-modal="true" aria-labelledby="scannerTitle">
+      <h3 id="scannerTitle" style="margin:0 0 6px" data-i18n="login.scannerTitle">Scan your personal QR</h3>
+      <p class="small muted" style="margin:0 0 12px" data-i18n="login.scannerHelp">Point the camera at the QR code on your card.</p>
+      <div class="scanner-view"><video id="camera" playsinline muted></video><div class="scanner-frame"></div></div>
+      <button class="btn secondary scanner-close" type="button" id="closeScanner" data-i18n="common.close">Close</button>
+    </section>
   </div>
   <script type="module">
     import { api, alertBox } from './js/common.js';
@@ -35,6 +54,75 @@
     const form = document.getElementById('loginForm');
     const msg = document.getElementById('msg');
     const pinInput = document.getElementById('pin');
+    const scanBtn = document.getElementById('scanBtn');
+    const scanner = document.getElementById('scanner');
+    const camera = document.getElementById('camera');
+    let cameraStream = null;
+    let scanning = false;
+
+    function stopScanner() {
+      scanning = false;
+      if (cameraStream) cameraStream.getTracks().forEach((track) => track.stop());
+      cameraStream = null;
+      camera.srcObject = null;
+      scanner.hidden = true;
+      scanBtn.disabled = false;
+    }
+
+    async function signInFromQr(rawValue) {
+      const url = new URL(rawValue, location.origin);
+      if (url.origin !== location.origin || !['/student-access.html', '/register.html'].includes(url.pathname)) {
+        throw new Error(t('login.invalidQr'));
+      }
+      const secret = new URLSearchParams(url.hash.slice(1));
+      const pupilId = Number(secret.get('pupil'));
+      const qrPin = secret.get('pin');
+      if (!Number.isInteger(pupilId) || pupilId < 1 || !/^\d{6}$/.test(qrPin || '')) {
+        throw new Error(t('login.invalidQr'));
+      }
+      await api('/api/auth/qr-login', { method: 'POST', body: { pupilId, pin: qrPin } });
+      location.href = '/student.html';
+    }
+
+    async function scanFrame(detector) {
+      if (!scanning) return;
+      try {
+        const codes = await detector.detect(camera);
+        if (codes.length) {
+          scanning = false;
+          const value = codes[0].rawValue;
+          stopScanner();
+          scanBtn.disabled = true;
+          await signInFromQr(value);
+          return;
+        }
+      } catch { /* camera may be between frames; keep scanning */ }
+      if (scanning) setTimeout(() => scanFrame(detector), 220);
+    }
+
+    scanBtn.addEventListener('click', async () => {
+      msg.innerHTML = '';
+      scanBtn.disabled = true;
+      try {
+        if (!navigator.mediaDevices?.getUserMedia || !('BarcodeDetector' in window)) {
+          throw new Error(t('login.cameraUnsupported'));
+        }
+        const detector = new BarcodeDetector({ formats: ['qr_code'] });
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } }, audio: false,
+        });
+        camera.srcObject = cameraStream;
+        scanner.hidden = false;
+        await camera.play();
+        scanning = true;
+        scanFrame(detector);
+      } catch (err) {
+        stopScanner();
+        msg.append(alertBox('error', err.name === 'NotAllowedError' ? t('login.cameraDenied') : err.message));
+      }
+    });
+    document.getElementById('closeScanner').addEventListener('click', stopScanner);
+    window.addEventListener('pagehide', stopScanner);
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       msg.innerHTML = '';

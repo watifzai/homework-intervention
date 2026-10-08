@@ -42,6 +42,8 @@ const STRINGS = {
 
     'login.teacherTitle': 'Teacher login',
     'login.pupilTitle': 'Pupil login',
+    'login.pinHelp': 'Enter the six-digit PIN from your personal card.',
+    'login.pinLabel': 'Your six-digit PIN',
     'login.demoHint': 'Demo teacher: ',
     'login.codeLabel': 'Access code',
     'login.demoBtn': 'Temporary demo access',
@@ -392,6 +394,8 @@ const STRINGS = {
 
     'login.teacherTitle': 'Log Masuk Guru',
     'login.pupilTitle': 'Log Masuk Murid',
+    'login.pinHelp': 'Masukkan PIN enam digit daripada kad peribadi anda.',
+    'login.pinLabel': 'PIN enam digit anda',
     'login.demoHint': 'Guru demo: ',
     'login.codeLabel': 'Kod akses',
     'login.demoBtn': 'Akses demo sementara',

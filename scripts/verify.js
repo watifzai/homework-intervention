@@ -102,6 +102,10 @@ async function main() {
     !registrationPage.includes('id="classCode"')
       && !registrationPage.includes('id="username"') && !registrationPage.includes('id="password"')
       && registrationPage.includes('/api/auth/qr-login'));
+  const studentLoginPage = fs.readFileSync(path.join(__dirname, '..', 'public', 'student-login.html'), 'utf8');
+  ok('student login page requires only the personal PIN',
+    studentLoginPage.includes('id="pin"') && studentLoginPage.includes('/api/auth/pin-login')
+      && !studentLoginPage.includes('id="username"') && !studentLoginPage.includes('id="password"'));
   ok('class PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: cls.regCode, pupilId: aiman[0].id, username:'classpin', password:'pass123'})).status === 403);
   ok('another pupil PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: pinFor(aiman[1].id), pupilId: aiman[0].id, username:'wrongpin', password:'pass123'})).status === 403);
 
@@ -415,6 +419,13 @@ async function main() {
     newKidId
   ).c;
   ok('repeat scans reuse the same pupil account', r.status === 200 && linkedAccounts === 1);
+  const PinOnly = client();
+  r = await PinOnly('POST', '/api/auth/pin-login', { pin: wrongQrPin });
+  ok('PIN-only login rejects an incorrect PIN', r.status === 401);
+  r = await PinOnly('POST', '/api/auth/pin-login', { pin: newKidCard.pin });
+  ok('student can sign in with only the six-digit PIN', r.status === 200 && r.data.displayName === 'New Kid');
+  r = await PinOnly('GET', '/api/pupil/homework');
+  ok('PIN-only session opens the pupil dashboard', r.status === 200);
   r = await T('POST', '/api/teacher/pupils', { classId: cls.id, name: 'Other Kid', studentNo: '6B020' });
   ok('duplicate student number blocked on add', r.status === 409);
   r = await P('POST', '/api/teacher/pupils', { classId: cls.id, name: 'Nope', studentNo: '6B021' });

@@ -297,22 +297,10 @@ function verifyPupilPin(pupil, pin) {
   pinAttempts.delete(pupil.id);
 }
 
-// A personal QR card is the pupil credential. The PIN stays in the URL
-// fragment (never in the HTTP request URL) and the page exchanges it for an
-// HttpOnly session. First scan creates the internal pupil account; later scans
-// sign into that same account on any device without a username or password.
-route('POST', '/api/auth/qr-login', async (req, res) => {
-  const { classCode, pupilId, pin } = await readBody(req);
-  if (!pupilId || !pin) throw new ApiError(400, 'This QR card is incomplete');
-
-  const accountId = tx(() => {
+function ensurePupilAccount(pupilId) {
+  return tx(() => {
     const pupil = one('SELECT * FROM pupils WHERE id = ?', Number(pupilId));
     if (!pupil) throw new ApiError(404, 'Pupil not found');
-    if (classCode) {
-      const cls = one('SELECT id FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
-      if (!cls || cls.id !== pupil.class_id) throw new ApiError(404, 'Pupil not found in this class');
-    }
-    verifyPupilPin(pupil, pin);
     if (pupil.account_id) return pupil.account_id;
 
     let username;
@@ -325,15 +313,62 @@ route('POST', '/api/auth/qr-login', async (req, res) => {
     const linked = run('UPDATE pupils SET account_id = ? WHERE id = ? AND account_id IS NULL', id, pupil.id);
     if (linked.changes) return id;
 
-    // Another scan won the race. Reuse its account and remove this orphan.
     run('DELETE FROM accounts WHERE id = ?', id);
     const current = one('SELECT account_id FROM pupils WHERE id = ?', pupil.id);
-    if (!current?.account_id) throw new ApiError(409, 'Please scan the QR card again');
+    if (!current?.account_id) throw new ApiError(409, 'Please try signing in again');
     return current.account_id;
   });
+}
+
+// A personal QR card is the pupil credential. The PIN stays in the URL
+// fragment (never in the HTTP request URL) and the page exchanges it for an
+// HttpOnly session. First scan creates the internal pupil account; later scans
+// sign into that same account on any device without a username or password.
+route('POST', '/api/auth/qr-login', async (req, res) => {
+  const { classCode, pupilId, pin } = await readBody(req);
+  if (!pupilId || !pin) throw new ApiError(400, 'This QR card is incomplete');
+
+  const pupil = one('SELECT * FROM pupils WHERE id = ?', Number(pupilId));
+  if (!pupil) throw new ApiError(404, 'Pupil not found');
+  if (classCode) {
+    const cls = one('SELECT id FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
+    if (!cls || cls.id !== pupil.class_id) throw new ApiError(404, 'Pupil not found in this class');
+  }
+  verifyPupilPin(pupil, pin);
+  const accountId = ensurePupilAccount(pupil.id);
 
   const { token } = createSession(accountId);
   send(res, 200, { ok: true, role: 'pupil', displayName: pupilName(accountId) }, {
+    'Set-Cookie': sessionCookie(token),
+    'Cache-Control': 'no-store',
+  });
+});
+
+// Manual fallback for pupils without their QR card. Registration PINs are
+// globally unique, so the PIN alone identifies and signs in the pupil.
+const pinLoginAttempts = new Map();
+route('POST', '/api/auth/pin-login', async (req, res) => {
+  const { pin } = await readBody(req);
+  const key = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+  const now = Date.now();
+  for (const [client, value] of pinLoginAttempts) if (value.until <= now) pinLoginAttempts.delete(client);
+  const attempt = pinLoginAttempts.get(key) || { count: 0, until: now + 15 * 60 * 1000 };
+  if (attempt.count >= 10) throw new ApiError(429, 'Too many incorrect PIN attempts. Try again in 15 minutes.');
+
+  const cleanPin = String(pin ?? '').trim();
+  const pupil = /^\d{6}$/.test(cleanPin)
+    ? one('SELECT * FROM pupils WHERE registration_pin = ?', cleanPin)
+    : null;
+  if (!pupil) {
+    attempt.count++;
+    pinLoginAttempts.set(key, attempt);
+    throw new ApiError(401, 'Incorrect student PIN. Check your personal card and try again.');
+  }
+  pinLoginAttempts.delete(key);
+
+  const accountId = ensurePupilAccount(pupil.id);
+  const { token } = createSession(accountId);
+  send(res, 200, { ok: true, role: 'pupil', displayName: pupil.name }, {
     'Set-Cookie': sessionCookie(token),
     'Cache-Control': 'no-store',
   });

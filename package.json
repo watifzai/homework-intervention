@@ -5,8 +5,9 @@
   "type": "module",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node scripts/generate-homework-sets.js && node server/index.js",
     "seed": "node server/seed.js",
+    "generate:homework": "node scripts/generate-homework-sets.js",
     "verify": "node scripts/verify.js"
   },
   "engines": {

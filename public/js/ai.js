@@ -21,6 +21,7 @@ const lastWord = (sentence) => {
   const w = stripPunct(sentence).split(' ').filter(Boolean);
   return w[w.length - 1] || '';
 };
+const blankLastWord = (sentence) => String(sentence ?? '').replace(/\b[\w'-]+(?=[.!?]*$)/, '___');
 
 // Build a wrong-but-plausible sentence from a model sentence's words.
 const scrambleSentence = (sentence) => {
@@ -109,6 +110,10 @@ function wordsContent(words) {
 function sentencesContent(sentences, topic, words) {
   const s = sentences.map((x) => String(x ?? '').trim()).filter(Boolean);
   const distractors = words.map((w) => w.word);
+  const completionOptions = (answer) => shuffle([
+    answer,
+    ...shuffle(distractors.filter((word) => word.toLowerCase() !== answer.toLowerCase())).slice(0, 3),
+  ]);
   return {
     modelSentences: s.slice(),
     questions: [
@@ -125,17 +130,17 @@ function sentencesContent(sentences, topic, words) {
       {
         id: 's4', kind: 'choice', prompt: 'Complete the sentence.',
         items: [{
-          text: (s[2] || s[0]).replace(/\b\w+\b$/, '___'),
+          text: blankLastWord(s[2] || s[0]),
           answer: lastWord(s[2] || s[0]),
-          options: shuffle([lastWord(s[2] || s[0]), ...shuffle(distractors).slice(0, 3)]),
+          options: completionOptions(lastWord(s[2] || s[0])),
         }],
       },
       {
         id: 's5', kind: 'choice', prompt: 'Complete the sentence.',
         items: [{
-          text: (s[3] || s[1] || s[0]).replace(/\b\w+\b$/, '___'),
+          text: blankLastWord(s[3] || s[1] || s[0]),
           answer: lastWord(s[3] || s[1] || s[0]),
-          options: shuffle([lastWord(s[3] || s[1] || s[0]), ...shuffle(distractors).slice(0, 3)]),
+          options: completionOptions(lastWord(s[3] || s[1] || s[0])),
         }],
       },
       {

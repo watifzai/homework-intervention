@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
   <title>Pupil Registration · Year 6 English</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,11 +36,11 @@
 
         <p class="small" style="margin: 0 0 6px;"><b>1.</b> <span data-i18n="reg.step1">Find and tap your name.</span></p>
         <div id="names" class="reglist" style="margin-bottom: 14px;"></div>
-        <p class="small" style="margin: 0 0 12px;"><b>2.</b> <span data-i18n="reg.step2">Enter the registration code from your teacher.</span></p>
+        <p class="small" style="margin: 0 0 12px;"><b>2.</b> <span data-i18n="reg.step2">Enter your own 6-digit PIN from your teacher.</span></p>
         <p class="small" style="margin: 0 0 12px;"><b>3.</b> <span data-i18n="reg.step3">Choose a username and password.</span></p>
         <form id="regForm">
-          <label class="field"><span data-i18n="reg.regCode">Teacher's registration code</span>
-            <input type="text" id="regCode" data-i18n-placeholder="reg.regCodePh" placeholder="6-letter code" autocapitalize="characters" required>
+          <label class="field"><span data-i18n="reg.regCode">Your 6-digit PIN</span>
+            <input type="text" id="regCode" data-i18n-placeholder="reg.regCodePh" placeholder="6-digit PIN" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required>
           </label>
           <label class="field"><span data-i18n="common.username">Username</span>
             <input type="text" id="username" data-i18n-placeholder="reg.usernamePh" placeholder="e.g. aiman2013" autocomplete="off" required>
@@ -80,6 +81,11 @@
 
     let pupils = [];
     let selectedId = null;
+    const invite = new URLSearchParams(location.hash.slice(1));
+    const invitedId = Number(invite.get('pupil')) || null;
+    const invitedPin = invite.get('pin');
+    if (invitedPin && /^\d{6}$/.test(invitedPin)) document.getElementById('regCode').value = invitedPin;
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 
     // Support /register.html?class=CODE links from the teacher page.
     const initialCode = new URLSearchParams(location.search).get('class');
@@ -91,6 +97,17 @@
       try {
         const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
         pupils = data.pupils;
+        if (invitedId) {
+          const invited = pupils.find(p => p.id === invitedId);
+          if (!invited) throw new Error(t('reg.invalidQr'));
+          pupils = [invited];
+          selectedId = invited.registered ? null : invited.id;
+          if (invited.registered) {
+            step2msg.replaceChildren(alertBox('info', t('reg.alreadyQr')),
+              el('a', { class: 'btn', href: '/student-login.html' }, t('reg.signIn')));
+            document.getElementById('regForm').hidden = true;
+          }
+        }
         document.getElementById('className').textContent = t('reg.classPrefix') + data.className;
         renderNames();
         step1.hidden = true;
@@ -143,12 +160,14 @@
         try {
           const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
           pupils = data.pupils;
+          if (invitedId) pupils = pupils.filter(p => p.id === invitedId);
           if (pupils.find(p => p.id === selectedId)?.registered) selectedId = null;
           renderNames();
         } catch { /* keep current list */ }
         btn.disabled = false; btn.textContent = t('reg.create');
       }
     });
+    if (initialCode && invitedId) document.getElementById('classForm').requestSubmit();
   </script>
 </body>
 </html>

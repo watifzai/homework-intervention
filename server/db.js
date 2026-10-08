@@ -8,6 +8,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { restoreCloudDatabase, markCloudDirty, flushCloudDatabase, cloudStoreEnabled } from './cloud-store.js';
 
@@ -51,7 +52,7 @@ CREATE TABLE IF NOT EXISTS classes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   code TEXT NOT NULL UNIQUE,              -- used on the pupil registration link
-  reg_code TEXT NOT NULL UNIQUE,         -- teacher-issued pupil registration code
+  reg_code TEXT NOT NULL UNIQUE,         -- legacy class code, retained for database compatibility
   teacher_id INTEGER NOT NULL REFERENCES accounts(id),
   is_demo INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -139,9 +140,27 @@ CREATE TABLE IF NOT EXISTS images (
 );
 `);
 
+// Add the column before cloud restore so both old and new snapshots can load.
+if (!db.prepare('PRAGMA table_info(pupils)').all().some(c => c.name === 'registration_pin')) {
+  db.exec('ALTER TABLE pupils ADD COLUMN registration_pin TEXT;');
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_pupils_registration_pin ON pupils(registration_pin);');
+
 const cloudRestore = await restoreCloudDatabase(db);
 if (cloudRestore.enabled) {
   console.log(`Firebase persistence enabled (${cloudRestore.restored} rows restored).`);
+}
+ensurePupilPins();
+
+export function ensurePupilPins() {
+  const missing = db.prepare('SELECT id FROM pupils WHERE registration_pin IS NULL').all();
+  for (const pupil of missing) {
+    let pin;
+    do { pin = String(randomInt(1000000)).padStart(6, '0'); }
+    while (db.prepare('SELECT 1 FROM pupils WHERE registration_pin = ?').get(pin));
+    db.prepare('UPDATE pupils SET registration_pin = ? WHERE id = ?').run(pin, pupil.id);
+    markCloudDirty();
+  }
 }
 
 // --- tiny helpers -------------------------------------------------------------
@@ -153,6 +172,7 @@ export function one(sql, ...params) {
 }
 export function run(sql, ...params) {
   const result = db.prepare(sql).run(...params);
+  if (/^\s*INSERT\s+INTO\s+pupils\b/i.test(sql)) ensurePupilPins();
   markCloudDirty();
   return result;
 }

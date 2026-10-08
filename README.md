@@ -6,7 +6,7 @@ A simple, practical teacher admin dashboard and pupil registration/homework work
 - **Reusable homework templates** grouped into topic sets (School Objects, Food, Animals). Each set has a version for every level.
 - **Level-matched assignments**: the teacher picks a topic set; each pupil receives the version for their teacher-set level.
 - **Content snapshots**: once assigned, homework content is frozen so later template edits never change existing work.
-- **Mobile-friendly registration**: pupils join using a class code and a teacher-issued registration code, then select their name from the class namelist.
+- **Personal registration cards**: every pupil gets a unique six-digit PIN and QR card. Scanning it opens the correct class, selects that pupil, and fills their PIN.
 - **One account per pupil** enforced in the database (including against concurrent registration attempts).
 
 ## Languages
@@ -50,7 +50,7 @@ A demo teacher and two demo classes are created on first start. All demo rows ca
 
 - **Teacher**: log in with the access code **0000** on the teacher login page (change it via the `TEACHER_CODE` environment variable)
 - **Demo classes**: `DEMO6B` (6 Bestari) and `DEMO6C` (6 Cekap)
-- **Pupil registration**: ask the teacher for the class code and the 6-character registration code shown on the teacher dashboard.
+- **Pupil registration**: open **Student PINs & QR cards** from the teacher dashboard, then print the cards or download one ZIP containing every named student card.
 
 ## Teacher workflow
 
@@ -61,7 +61,7 @@ A demo teacher and two demo classes are created on first start. All demo rows ca
 
 ## Pupil workflow
 
-1. **Registration** — go to the registration link (e.g. `/register.html?class=DEMO6B`), enter the teacher’s registration code, tap your name, and create a username + password.
+1. **Registration** — scan the personal QR card. The correct pupil and unique six-digit PIN are filled automatically; the pupil only creates a username and password. Manual entry remains available with the class code, pupil name, and personal PIN.
 2. **My Homework** — after logging in, see only your own homework cards. Tap **Start / Continue / View feedback**.
 3. **Do homework** — study the target words / model sentences / reading, then answer questions. Objective questions are auto-marked; written answers always wait for teacher review (they are never auto-failed). Tap **Save progress** to continue later.
 4. **Submit** — once submitted, you can’t edit. Teacher feedback appears on the card.

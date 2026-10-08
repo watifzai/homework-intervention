@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Student QR Cards · Year 6 English</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .qr-wrap{max-width:1120px;margin:32px auto;padding:0 20px}
+    .qr-hero{padding:32px;background:#17394b;color:#fff;border-radius:24px;margin:20px 0}
+    .qr-hero h1{font-size:clamp(26px,4vw,42px);max-width:700px;margin:10px 0}
+    .qr-hero p{max-width:660px;line-height:1.7;color:#e4eef0}
+    .qr-toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:24px 0}
+    .qr-toolbar select{min-width:200px;max-width:100%;padding:12px;border-radius:12px}
+    .qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
+    .qr-card{background:white;border:1px solid #dce5e8;border-radius:20px;padding:12px;break-inside:avoid;text-align:center}
+    .qr-card img{width:100%;height:auto;display:block}
+    .qr-actions{display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 0}
+    @media print{body{background:white}.bg-scene,.no-print{display:none!important}.qr-wrap{margin:0;padding:0}.qr-grid{grid-template-columns:repeat(2,1fr);gap:8mm}.qr-card{border:1px dashed #999;border-radius:0;padding:0}.qr-card img{max-height:118mm;object-fit:contain}}
+  </style>
+</head>
+<body>
+  <main class="qr-wrap">
+    <nav class="no-print row"><a href="/teacher.html" class="btn secondary" data-i18n="common.back">← Back</a><span id="lang"></span></nav>
+    <header class="qr-hero no-print"><span>YEAR 6 · ENGLISH</span><h1 data-i18n="qr.title"></h1><p data-i18n="qr.help"></p></header>
+    <div class="qr-toolbar no-print">
+      <label for="classes" data-i18n="reg.classCode">Class</label><select id="classes"></select>
+      <button id="download" class="btn" disabled data-i18n="qr.download"></button>
+      <button id="print" class="btn secondary" disabled data-i18n="qr.print"></button>
+      <span id="count" aria-live="polite"></span>
+    </div>
+    <p class="small muted no-print" data-i18n="qr.note"></p>
+    <div id="message" role="status" class="no-print"></div>
+    <section id="cards" class="qr-grid" aria-label="Student registration cards"></section>
+  </main>
+  <script type="module">
+    import { api, el, alertBox } from './js/common.js';
+    import { t, tServer, applyI18n, langToggle } from './js/i18n.js';
+    document.getElementById('lang').append(langToggle()); applyI18n();
+    const select = document.getElementById('classes');
+    const message = document.getElementById('message');
+    const cardsBox = document.getElementById('cards');
+    const download = document.getElementById('download');
+    const print = document.getElementById('print');
+    let revision = 0;
+    const query = () => select.value ? '?classId=' + encodeURIComponent(select.value) : '';
+    async function load() {
+      const current = ++revision;
+      download.disabled = print.disabled = true;
+      cardsBox.replaceChildren(); document.getElementById('count').textContent = '';
+      message.textContent = t('qr.loading');
+      try {
+        const { cards } = await api('/api/teacher/registration-cards' + query());
+        if (current !== revision) return;
+        message.textContent = cards.length ? '' : t('qr.empty');
+        document.getElementById('count').textContent = `${cards.length} ${t('qr.count')}`;
+        for (const c of cards) {
+          cardsBox.append(el('article', { class: 'qr-card' },
+            el('img', { src: c.qr, alt: `${c.name} · ${c.className} · PIN ${c.pin}`, width: '720', height: '940' }),
+            el('div', { class: 'qr-actions no-print' },
+              el('span', { class: 'badge ' + (c.registered ? 'ok' : 'muted') }, t(c.registered ? 'common.registered' : 'common.notRegistered')),
+              el('a', { href: c.qr, download: `${c.classCode}-${c.id}-QR.svg`, class: 'btn small secondary' }, t('qr.single')))));
+        }
+        download.disabled = print.disabled = cards.length === 0;
+      } catch (err) {
+        if (current !== revision) return;
+        if (err.status === 401) { location.href = '/teacher-login.html'; return; }
+        message.replaceChildren(alertBox('error', tServer(err.message)));
+      }
+    }
+    select.addEventListener('change', load);
+    print.addEventListener('click', () => window.print());
+    download.addEventListener('click', async () => {
+      download.disabled = true; select.disabled = true;
+      try {
+        const response = await fetch('/api/teacher/registration-cards.zip' + query());
+        if (!response.ok) throw new Error((await response.json()).error || 'Download failed');
+        const url = URL.createObjectURL(await response.blob());
+        const link = el('a', { href: url, download: 'student-qr-codes.zip' });
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      } catch (err) { message.replaceChildren(alertBox('error', tServer(err.message))); }
+      finally { download.disabled = false; select.disabled = false; }
+    });
+    try {
+      const { classes } = await api('/api/teacher/classes');
+      select.append(el('option', { value: '' }, t('qr.all')));
+      for (const c of classes) select.append(el('option', { value: c.id }, c.name));
+      const initial = new URLSearchParams(location.search).get('classId');
+      if (classes.some(c => String(c.id) === initial)) select.value = initial;
+      await load();
+    } catch (err) {
+      if (err.status === 401) location.href = '/teacher-login.html';
+      else message.replaceChildren(alertBox('error', tServer(err.message)));
+    }
+  </script>
+</body>
+</html>

@@ -5,7 +5,7 @@
 //   - teachers manage only classes they own
 //   - pupils read/write only their own pupil_assignment rows
 //   - pupils can never set proficiency or claim an already-linked pupil
-//   - registration needs the teacher-issued class registration code
+//   - registration needs the selected pupil's unique six-digit PIN
 // ---------------------------------------------------------------------------
 import http from 'node:http';
 import fs from 'node:fs';
@@ -22,6 +22,8 @@ import {
 } from './marking.js';
 import { seedDemo, ensureDemoPupil, relabelDemoTemplates } from './seed.js';
 import { generateHomework } from '../public/js/ai.js';
+import QRCode from 'qrcode';
+import { zipSync, strToU8 } from 'fflate';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -280,6 +282,7 @@ route('GET', '/api/register/:classCode', async (req, res, { classCode }) => {
 // Claim a pupil record. Safe against races: the UPDATE ... WHERE account_id IS NULL
 // inside a transaction means exactly one concurrent registration can win; the
 // UNIQUE(account_id) constraint backstops everything else.
+const pinAttempts = new Map();
 route('POST', '/api/register', async (req, res) => {
   const { classCode, regCode, pupilId, username, password } = await readBody(req);
   if (!classCode || !regCode || !pupilId || !username || !password) {
@@ -294,11 +297,18 @@ route('POST', '/api/register', async (req, res) => {
   const accountId = tx(() => {
     const cls = one('SELECT * FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
     if (!cls) throw new ApiError(404, 'Class not found');
-    if (String(regCode).trim().toUpperCase() !== cls.reg_code) {
-      throw new ApiError(403, 'Wrong class registration code. Ask your teacher for the right code.');
-    }
     const pupil = one('SELECT * FROM pupils WHERE id = ? AND class_id = ?', Number(pupilId), cls.id);
     if (!pupil) throw new ApiError(404, 'Pupil not found in this class');
+    const now = Date.now();
+    for (const [key, value] of pinAttempts) if (value.until <= now) pinAttempts.delete(key);
+    const attempt = pinAttempts.get(pupil.id) || { count: 0, until: now + 15 * 60 * 1000 };
+    if (attempt.count >= 10) throw new ApiError(429, 'Too many incorrect PIN attempts. Try again in 15 minutes.');
+    if (!/^\d{6}$/.test(String(regCode).trim()) || String(regCode).trim() !== pupil.registration_pin) {
+      attempt.count++;
+      pinAttempts.set(pupil.id, attempt);
+      throw new ApiError(403, 'Incorrect student PIN. Ask your teacher for your own 6-digit PIN.');
+    }
+    pinAttempts.delete(pupil.id);
     if (pupil.account_id) throw new ApiError(409, 'This name is already registered');
     const exists = one('SELECT id FROM accounts WHERE username = ?', uname);
     if (exists) throw new ApiError(409, 'That username is taken. Try another one.');
@@ -328,6 +338,54 @@ function pupilName(accountId) {
 // =============================================================================
 // TEACHER: classes & students
 // =============================================================================
+async function registrationCards(req) {
+  const user = requireRole(req, 'teacher');
+  const classId = new URL(req.url, 'http://x').searchParams.get('classId');
+  if (classId) ownClass(user, Number(classId));
+  const rows = q(`SELECT p.*, c.name AS class_name, c.code AS class_code
+    FROM pupils p JOIN classes c ON c.id = p.class_id
+    WHERE c.teacher_id = ? ${classId ? 'AND c.id = ?' : ''}
+    ORDER BY c.name, p.name COLLATE NOCASE, p.student_no`,
+    ...[user.id, ...(classId ? [Number(classId)] : [])]);
+  const origin = process.env.RENDER_EXTERNAL_URL || `http://${req.headers.host}`;
+  const cards = [];
+  for (const p of rows) {
+    const url = new URL('/register.html', origin);
+    url.searchParams.set('class', p.class_code);
+    // The fragment keeps the PIN out of HTTP request URLs and referrers.
+    url.hash = new URLSearchParams({ pupil: String(p.id), pin: p.registration_pin }).toString();
+    const qr = await QRCode.toString(url.href, { type: 'svg', width: 600, margin: 4, errorCorrectionLevel: 'M' });
+    const xml = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;' }[c]));
+    const nameLines = p.name.match(/.{1,28}(?:\s|$)|.{1,28}/g) || [p.name];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940"><rect width="720" height="940" rx="24" fill="white"/>${qr.replace('<svg ', '<svg x="60" y="20" ')}<g text-anchor="middle" fill="#172c40" font-family="Arial, sans-serif">${nameLines.map((line,i) => `<text x="360" y="${650+i*36}" font-size="30" font-weight="700">${xml(line.trim())}</text>`).join('')}<text x="360" y="790" font-size="22">${xml(p.class_name)} · No. ${xml(p.student_no)}</text><text x="360" y="841" font-size="30" letter-spacing="5">PIN: ${p.registration_pin}</text><text x="360" y="895" font-size="20">Scan to register · Imbas untuk daftar</text></g></svg>`;
+    cards.push({ id: p.id, name: p.name, studentNo: p.student_no,
+      className: p.class_name, classCode: p.class_code, pin: p.registration_pin,
+      registered: !!p.account_id, url: url.href, svg });
+  }
+  return cards;
+}
+
+route('GET', '/api/teacher/registration-cards', async (req, res) => {
+  const cards = await registrationCards(req);
+  send(res, 200, { cards: cards.map(({ svg, ...card }) => ({ ...card, qr: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64') })) });
+});
+
+route('GET', '/api/teacher/registration-cards.zip', async (req, res) => {
+  const cards = await registrationCards(req);
+  const files = {};
+  const escape = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  const html = [];
+  for (const card of cards) {
+    const filename = `${card.classCode}-${card.id}-${card.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.svg`;
+    files[filename] = strToU8(card.svg);
+    html.push(`<article><img src="${filename}" alt="${escape(card.name)} — registration card"></article>`);
+  }
+  files['print-cards.html'] = strToU8(`<!doctype html><html><meta charset="utf-8"><title>Student registration cards</title><style>body{font:16px system-ui;display:grid;grid-template-columns:repeat(2,1fr);gap:20px}article{text-align:center;border:1px dashed #777;padding:8px;break-inside:avoid}img{width:100%;max-width:300px;height:auto}@media print{body{gap:8mm}}</style><body>${html.join('')}</body></html>`);
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Cache-Control': 'no-store',
+    'Content-Disposition': 'attachment; filename="student-qr-codes.zip"' });
+  res.end(Buffer.from(zipSync(files)));
+});
+
 route('GET', '/api/teacher/classes', async (req, res) => {
   const user = requireRole(req, 'teacher');
   const classes = q('SELECT * FROM classes WHERE teacher_id = ? ORDER BY name', user.id);
@@ -338,10 +396,9 @@ route('GET', '/api/teacher/classes', async (req, res) => {
   });
 });
 
-// Create a real class. The public class code (registration link) and the
-// 6-digit pupil registration code are generated server-side; both are UNIQUE
-// in the database, so collisions just regenerate. Codes use an unambiguous
-// alphabet (no I/O/0/1) because teachers read them aloud and pupils type them.
+// Create a real class. The public class code is generated server-side. The
+// legacy reg_code is retained for compatibility but registration uses each
+// pupil's unique PIN. Codes avoid ambiguous characters when read aloud.
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function randomCode(len, alphabet = CODE_ALPHABET) {
   let out = '';
@@ -497,7 +554,7 @@ route('POST', '/api/teacher/pupils/bulk', async (req, res) => {
 });
 
 // Add a new pupil to a class namelist. They then register themselves with
-// the class code + registration code, claiming this record.
+// the class code + their personal six-digit PIN, claiming this record.
 route('POST', '/api/teacher/pupils', async (req, res) => {
   const user = requireRole(req, 'teacher');
   const { classId, name, studentNo, proficiency } = await readBody(req);

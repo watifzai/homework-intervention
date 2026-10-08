@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { unzipSync, strFromU8 } from 'fflate';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // throwaway database for the test run — the real one is never touched
@@ -48,7 +49,8 @@ function client() {
     const setCookie = res.headers.get('set-cookie');
     if (setCookie) cookie = setCookie.split(';')[0];
     let data = null;
-    try { data = await res.json(); } catch { /* no body */ }
+    if (res.headers.get('content-type')?.includes('application/zip')) data = new Uint8Array(await res.arrayBuffer());
+    else try { data = await res.json(); } catch { /* no body */ }
     return { status: res.status, data };
   };
 }
@@ -78,10 +80,29 @@ async function main() {
   const aiman = studentsData.students.filter((s) => s.name === 'Aiman Hakim');
   ok('identical names distinguished by student_no', aiman.length === 2 && aiman[0].studentNo !== aiman[1].studentNo);
   ok('all pupils unregistered at start', studentsData.students.every((s) => !s.registered));
+  const { data: cardData } = await T('GET', `/api/teacher/registration-cards?classId=${cls.id}`);
+  const pinFor = id => cardData.cards.find(c => c.id === id).pin;
+  ok('every pupil has a unique six-digit PIN', cardData.cards.length === 7 && cardData.cards.every(c => /^\d{6}$/.test(c.pin)) && new Set(cardData.cards.map(c => c.pin)).size === 7);
+  ok('QR links include correct class, pupil and PIN', cardData.cards.every(c => {
+    const url = new URL(c.url); const hash = new URLSearchParams(url.hash.slice(1));
+    return url.searchParams.get('class') === cls.code && hash.get('pupil') === String(c.id) && hash.get('pin') === c.pin;
+  }));
+  ok('QR cards include each name below the QR', cardData.cards.every(c => {
+    const svg = Buffer.from(c.qr.split(',')[1], 'base64').toString();
+    return svg.includes(c.name) && svg.includes('y="650"') && svg.includes(c.pin);
+  }));
+  const archive = await T('GET', `/api/teacher/registration-cards.zip?classId=${cls.id}`);
+  const files = unzipSync(archive.data);
+  ok('ZIP includes all student cards and printable sheet', Object.keys(files).filter(f => f.endsWith('.svg')).length === 7 && strFromU8(files['print-cards.html']).includes('Registration') === false && !!files['print-cards.html']);
+  ok('unauthenticated users cannot download PINs', (await client()('GET', '/api/teacher/registration-cards')).status === 401);
+  ok('unauthenticated users cannot download QR ZIP', (await client()('GET', '/api/teacher/registration-cards.zip')).status === 401);
+  ok('class PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: cls.regCode, pupilId: aiman[0].id, username:'classpin', password:'pass123'})).status === 403);
+  ok('another pupil PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: pinFor(aiman[1].id), pupilId: aiman[0].id, username:'wrongpin', password:'pass123'})).status === 403);
 
   console.log('\n— registration —');
   const { data: namelist } = await client()('GET', '/api/register/DEMO6B');
   ok('namelist served without auth', namelist.pupils.length === 7);
+  ok('public namelist never exposes PINs', namelist.pupils.every(p => !('pin' in p) && !('registration_pin' in p)));
   ok('duplicate names flagged with sameName', namelist.pupils.filter((p) => p.sameName).length === 2);
 
   // wrong reg code must fail and NOT reserve the name
@@ -90,9 +111,9 @@ async function main() {
     classCode: 'DEMO6B', regCode: 'WRONG', pupilId: aiman[0].id,
     username: 'aiman1', password: 'pass123',
   });
-  ok('wrong registration code rejected', r.status === 403);
+  ok('wrong student PIN rejected', r.status === 403);
   r = await anon('POST', '/api/register', {
-    classCode: 'DEMO6B', regCode: cls.regCode, pupilId: aiman[0].id,
+    classCode: 'DEMO6B', regCode: pinFor(aiman[0].id), pupilId: aiman[0].id,
     username: 'aiman1', password: 'pass123',
   });
   ok('failed registration did not reserve the name', r.status === 201);
@@ -100,15 +121,15 @@ async function main() {
   // duplicate claim
   const anon2 = client();
   r = await anon2('POST', '/api/register', {
-    classCode: 'DEMO6B', regCode: cls.regCode, pupilId: aiman[0].id,
+    classCode: 'DEMO6B', regCode: pinFor(aiman[0].id), pupilId: aiman[0].id,
     username: 'someoneelse', password: 'pass123',
   });
   ok('duplicate name claim rejected', r.status === 409);
 
   // concurrent duplicate claim
   const [c1, c2] = await Promise.all([
-    client()('POST', '/api/register', { classCode: 'DEMO6B', regCode: cls.regCode, pupilId: aiman[1].id, username: 'aimanb1', password: 'pass123' }),
-    client()('POST', '/api/register', { classCode: 'DEMO6B', regCode: cls.regCode, pupilId: aiman[1].id, username: 'aimanb2', password: 'pass123' }),
+    client()('POST', '/api/register', { classCode: 'DEMO6B', regCode: pinFor(aiman[1].id), pupilId: aiman[1].id, username: 'aimanb1', password: 'pass123' }),
+    client()('POST', '/api/register', { classCode: 'DEMO6B', regCode: pinFor(aiman[1].id), pupilId: aiman[1].id, username: 'aimanb2', password: 'pass123' }),
   ]);
   ok('concurrent claims: exactly one wins', (c1.status === 201) !== (c2.status === 201));
 
@@ -139,7 +160,7 @@ async function main() {
 
   // register Sofia so a registered pupil does the homework flow
   const sofiaReg = await client()('POST', '/api/register', {
-    classCode: 'DEMO6B', regCode: cls.regCode, pupilId: sofia.id,
+    classCode: 'DEMO6B', regCode: pinFor(sofia.id), pupilId: sofia.id,
     username: 'sofialim', password: 'pass123',
   });
   ok('sofia registered', sofiaReg.status === 201);
@@ -319,7 +340,7 @@ async function main() {
   r = await T('GET', '/api/pupil/homework');
   ok('teacher cannot call pupil APIs', r.status === 403);
   r = await anon('POST', '/api/register', {
-    classCode: 'DEMO6B', regCode: cls.regCode, pupilId: aiman[0].id,
+    classCode: 'DEMO6B', regCode: pinFor(aiman[0].id), pupilId: aiman[0].id,
     username: 'ghost', password: 'pass123',
   });
   ok('cannot claim already-linked pupil', r.status === 409);

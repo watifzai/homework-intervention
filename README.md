@@ -31,7 +31,18 @@ Open [http://localhost:3000](http://localhost:3000). Both login pages have a **T
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/watifzai/homework-intervention)
 
-One click signs you in with GitHub and creates a free web service from this repo's `render.yaml`. **Note:** free-tier storage is ephemeral — the SQLite database (including pupil records) resets whenever the service restarts or redeploys. Keep real class records on a paid plan with a persistent disk, or run the app locally.
+One click signs you in with GitHub and creates a free web service from this repo's `render.yaml`. Render's free filesystem is ephemeral, so this app can mirror its SQLite rows to Firebase Firestore and restore them after every restart or redeploy.
+
+### Persistent data with Firebase Firestore
+
+1. Create a Firebase project and enable Firestore.
+2. In **Project settings > Service accounts**, generate a Firebase Admin private key.
+3. In the Render service, open **Environment > Secret Files** and add a file named `firebase-service-account.json`.
+4. Paste the entire downloaded JSON key into the file contents and save the changes.
+
+Render exposes that file as `/etc/secrets/firebase-service-account.json`, which the app detects automatically. The credential must never be committed to GitHub. For other hosts, set `FIREBASE_SERVICE_ACCOUNT_PATH` or `GOOGLE_APPLICATION_CREDENTIALS` to the JSON file path, or set `FIREBASE_SERVICE_ACCOUNT_JSON` to the full JSON value.
+
+SQLite remains the app's fast local database. When Firebase is configured, Firestore is the durable copy: it is restored during startup, and API mutations are mirrored before a successful response is sent.
 
 ## Demo credentials
 

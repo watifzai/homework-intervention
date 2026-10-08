@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { restoreCloudDatabase, markCloudDirty, flushCloudDatabase, cloudStoreEnabled } from './cloud-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.Y6_DB_DIR || path.join(__dirname, '..', 'data');
@@ -138,6 +139,11 @@ CREATE TABLE IF NOT EXISTS images (
 );
 `);
 
+const cloudRestore = await restoreCloudDatabase(db);
+if (cloudRestore.enabled) {
+  console.log(`Firebase persistence enabled (${cloudRestore.restored} rows restored).`);
+}
+
 // --- tiny helpers -------------------------------------------------------------
 export function q(sql, ...params) {
   return db.prepare(sql).all(...params);
@@ -146,7 +152,9 @@ export function one(sql, ...params) {
   return db.prepare(sql).get(...params);
 }
 export function run(sql, ...params) {
-  return db.prepare(sql).run(...params);
+  const result = db.prepare(sql).run(...params);
+  markCloudDirty();
+  return result;
 }
 export function tx(fn) {
   db.exec('BEGIN');
@@ -159,3 +167,9 @@ export function tx(fn) {
     throw e;
   }
 }
+
+export function flushCloud() {
+  return flushCloudDatabase(db);
+}
+
+export { cloudStoreEnabled };

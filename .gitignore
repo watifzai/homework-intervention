@@ -6,6 +6,11 @@ data/
 
 # Local scratch (throwaway test servers/scripts)
 .tmp/
+node_modules/
+
+# Firebase Admin credentials must only live in secret storage
+*-firebase-adminsdk-*.json
+service-account*.json
 
 # OS noise
 Thumbs.db

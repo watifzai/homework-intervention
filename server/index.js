@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes, randomInt } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { q, one, run, tx, LEVELS, LEVEL_LABELS } from './db.js';
+import { q, one, run, tx, flushCloud, cloudStoreEnabled, LEVELS, LEVEL_LABELS } from './db.js';
 import { hashPassword, verifyPassword } from './passwords.js';
 import {
   createSession, destroySession, parseCookies, sessionCookie, clearSessionCookie, attachUser,
@@ -1097,7 +1097,20 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/api/')) {
       const m = matchRoute(req.method, pathname);
-      if (m) return await m.handler(req, res, m.params);
+      if (m) {
+        if (!cloudStoreEnabled()) return await m.handler(req, res, m.params);
+        let status = 200;
+        let headers = {};
+        let body;
+        const buffered = {
+          writeHead(code, nextHeaders = {}) { status = code; headers = nextHeaders; },
+          end(data) { body = data; },
+        };
+        await m.handler(req, buffered, m.params);
+        await flushCloud();
+        res.writeHead(status, headers);
+        return res.end(body);
+      }
       return send(res, 404, { error: 'Not found' });
     }
 
@@ -1134,13 +1147,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-export function startServer({ port = PORT, seed = true } = {}) {
+export async function startServer({ port = PORT, seed = true } = {}) {
   if (seed) {
     const r = seedDemo();
     if (r.seeded) console.log('Demo data seeded (labelled is_demo=1, separate from real records).');
     const rp = ensureDemoPupil();
     if (rp.seeded) console.log('Demo pupil access account created (labelled is_demo=1).');
     relabelDemoTemplates();
+    await flushCloud();
   }
   return new Promise((resolve) => {
     server.listen(port, () => {
@@ -1151,5 +1165,8 @@ export function startServer({ port = PORT, seed = true } = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  startServer();
+  startServer().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

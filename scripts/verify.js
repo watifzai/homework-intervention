@@ -85,7 +85,7 @@ async function main() {
   ok('every pupil has a unique six-digit PIN', cardData.cards.length === 7 && cardData.cards.every(c => /^\d{6}$/.test(c.pin)) && new Set(cardData.cards.map(c => c.pin)).size === 7);
   ok('QR links open passwordless sign-in with correct class, pupil and PIN', cardData.cards.every(c => {
     const url = new URL(c.url); const hash = new URLSearchParams(url.hash.slice(1));
-    return url.pathname === '/student-access.html' && url.searchParams.get('class') === cls.code
+    return url.pathname === '/student-access.html' && !url.searchParams.has('class')
       && hash.get('pupil') === String(c.id) && hash.get('pin') === c.pin;
   }));
   ok('QR cards include each name below the QR', cardData.cards.every(c => {
@@ -98,8 +98,9 @@ async function main() {
   ok('unauthenticated users cannot download PINs', (await client()('GET', '/api/teacher/registration-cards')).status === 401);
   ok('unauthenticated users cannot download QR ZIP', (await client()('GET', '/api/teacher/registration-cards.zip')).status === 401);
   const registrationPage = fs.readFileSync(path.join(__dirname, '..', 'public', 'register.html'), 'utf8');
-  ok('registration page needs no username or password',
-    !registrationPage.includes('id="username"') && !registrationPage.includes('id="password"')
+  ok('registration page needs no class code, username or password',
+    !registrationPage.includes('id="classCode"')
+      && !registrationPage.includes('id="username"') && !registrationPage.includes('id="password"')
       && registrationPage.includes('/api/auth/qr-login'));
   ok('class PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: cls.regCode, pupilId: aiman[0].id, username:'classpin', password:'pass123'})).status === 403);
   ok('another pupil PIN cannot claim a pupil', (await client()('POST', '/api/register', {classCode: cls.code, regCode: pinFor(aiman[1].id), pupilId: aiman[0].id, username:'wrongpin', password:'pass123'})).status === 403);
@@ -401,14 +402,14 @@ async function main() {
   const newKidCard = newCards.cards.find((card) => card.id === newKidId);
   const NewKidQr = client();
   const wrongQrPin = newKidCard.pin === '000000' ? '000001' : '000000';
-  r = await NewKidQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: wrongQrPin });
+  r = await NewKidQr('POST', '/api/auth/qr-login', { pupilId: newKidId, pin: wrongQrPin });
   ok('QR sign-in rejects the wrong personal PIN', r.status === 403);
-  r = await NewKidQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: newKidCard.pin });
+  r = await NewKidQr('POST', '/api/auth/qr-login', { pupilId: newKidId, pin: newKidCard.pin });
   ok('QR signs in without username or password', r.status === 200 && r.data.role === 'pupil' && r.data.displayName === 'New Kid');
   r = await NewKidQr('GET', '/api/pupil/homework');
   ok('QR session opens the pupil dashboard', r.status === 200);
   const RepeatQr = client();
-  r = await RepeatQr('POST', '/api/auth/qr-login', { classCode: cls.code, pupilId: newKidId, pin: newKidCard.pin });
+  r = await RepeatQr('POST', '/api/auth/qr-login', { pupilId: newKidId, pin: newKidCard.pin });
   const linkedAccounts = dbModule.one(
     'SELECT COUNT(*) AS c FROM accounts a JOIN pupils p ON p.account_id = a.id WHERE p.id = ?',
     newKidId

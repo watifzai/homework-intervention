@@ -31,7 +31,6 @@
     const status = document.getElementById('status');
     const message = document.getElementById('message');
     const back = document.getElementById('back');
-    const classCode = new URLSearchParams(location.search).get('class');
     const secret = new URLSearchParams(location.hash.slice(1));
     const pupilId = Number(secret.get('pupil'));
     const pin = secret.get('pin');
@@ -40,12 +39,12 @@
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 
     try {
-      if (!classCode || !Number.isInteger(pupilId) || pupilId < 1 || !/^\d{6}$/.test(pin || '')) {
+      if (!Number.isInteger(pupilId) || pupilId < 1 || !/^\d{6}$/.test(pin || '')) {
         throw new Error(t('qrLogin.invalid'));
       }
       const result = await api('/api/auth/qr-login', {
         method: 'POST',
-        body: { classCode, pupilId, pin },
+        body: { pupilId, pin },
       });
       status.textContent = t('qrLogin.welcome', { name: result.displayName });
       location.replace('/student.html');

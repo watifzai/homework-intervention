@@ -303,13 +303,15 @@ function verifyPupilPin(pupil, pin) {
 // sign into that same account on any device without a username or password.
 route('POST', '/api/auth/qr-login', async (req, res) => {
   const { classCode, pupilId, pin } = await readBody(req);
-  if (!classCode || !pupilId || !pin) throw new ApiError(400, 'This QR card is incomplete');
+  if (!pupilId || !pin) throw new ApiError(400, 'This QR card is incomplete');
 
   const accountId = tx(() => {
-    const cls = one('SELECT * FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
-    if (!cls) throw new ApiError(404, 'Class not found');
-    const pupil = one('SELECT * FROM pupils WHERE id = ? AND class_id = ?', Number(pupilId), cls.id);
-    if (!pupil) throw new ApiError(404, 'Pupil not found in this class');
+    const pupil = one('SELECT * FROM pupils WHERE id = ?', Number(pupilId));
+    if (!pupil) throw new ApiError(404, 'Pupil not found');
+    if (classCode) {
+      const cls = one('SELECT id FROM classes WHERE code = ?', String(classCode).trim().toUpperCase());
+      if (!cls || cls.id !== pupil.class_id) throw new ApiError(404, 'Pupil not found in this class');
+    }
     verifyPupilPin(pupil, pin);
     if (pupil.account_id) return pupil.account_id;
 
@@ -396,7 +398,6 @@ async function registrationCards(req) {
   const cards = [];
   for (const p of rows) {
     const url = new URL('/student-access.html', origin);
-    url.searchParams.set('class', p.class_code);
     // The fragment keeps the PIN out of HTTP request URLs and referrers.
     url.hash = new URLSearchParams({ pupil: String(p.id), pin: p.registration_pin }).toString();
     const qr = await QRCode.toString(url.href, { type: 'svg', width: 600, margin: 4, errorCorrectionLevel: 'M' });

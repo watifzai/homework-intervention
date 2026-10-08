@@ -17,17 +17,7 @@
     <div class="card">
       <h2 style="margin: 0 0 8px; font-size: 1.0625rem;" data-i18n="reg.title">Open your homework</h2>
 
-      <!-- Step 1: class code -->
-      <section id="step1">
-        <p class="small muted" style="margin-top: 0;" data-i18n="reg.help1">Ask your teacher for your class code.</p>
-        <div id="step1msg"></div>
-        <form id="classForm">
-          <label class="field"><span data-i18n="reg.classCode">Class code</span>
-            <input type="text" id="classCode" data-i18n-placeholder="reg.classPh" placeholder="e.g. DEMO6B" autocapitalize="characters" required>
-          </label>
-          <button class="btn block" type="submit" data-i18n="reg.continue">Continue</button>
-        </form>
-      </section>
+      <div id="pageMsg"></div>
 
       <!-- Step 2: pick name + personal PIN -->
       <section id="step2" hidden>
@@ -66,10 +56,9 @@
     document.getElementById('langSlot').append(langToggle());
     applyI18n();
 
-    const step1 = document.getElementById('step1');
     const step2 = document.getElementById('step2');
     const step3 = document.getElementById('step3');
-    const step1msg = document.getElementById('step1msg');
+    const pageMsg = document.getElementById('pageMsg');
     const step2msg = document.getElementById('step2msg');
 
     let pupils = [];
@@ -80,15 +69,14 @@
     if (invitedPin && /^\d{6}$/.test(invitedPin)) document.getElementById('regCode').value = invitedPin;
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 
-    // Support /register.html?class=CODE links from the teacher page.
+    // The teacher link supplies the class internally; pupils never type or see it.
     const initialCode = new URLSearchParams(location.search).get('class');
-    if (initialCode) document.getElementById('classCode').value = initialCode;
 
-    document.getElementById('classForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      step1msg.innerHTML = '';
+    async function loadClass() {
+      pageMsg.innerHTML = '';
       try {
-        const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
+        if (!initialCode) throw new Error(t('reg.qrOnly'));
+        const data = await api('/api/register/' + encodeURIComponent(initialCode.trim().toUpperCase()));
         pupils = data.pupils;
         if (invitedId) {
           const invited = pupils.find(p => p.id === invitedId);
@@ -98,13 +86,12 @@
         }
         document.getElementById('className').textContent = t('reg.classPrefix') + data.className;
         renderNames();
-        step1.hidden = true;
         step2.hidden = false;
         if (invitedId && /^\d{6}$/.test(invitedPin || '')) document.getElementById('regForm').requestSubmit();
       } catch (err) {
-        step1msg.append(alertBox('error', tServer(err.message)));
+        pageMsg.append(alertBox('info', tServer(err.message)));
       }
-    });
+    }
 
     function renderNames() {
       const box = document.getElementById('names');
@@ -133,7 +120,6 @@
       btn.disabled = true; btn.textContent = t('reg.creating');
       try {
         const r = await api('/api/auth/qr-login', { method: 'POST', body: {
-          classCode: classCode.value.trim().toUpperCase(),
           pin: regCode.value.trim(),
           pupilId: selectedId,
         }});
@@ -144,7 +130,7 @@
       } catch (err) {
         step2msg.append(alertBox('error', tServer(err.message)));
         try {
-          const data = await api('/api/register/' + encodeURIComponent(classCode.value.trim().toUpperCase()));
+          const data = await api('/api/register/' + encodeURIComponent(initialCode.trim().toUpperCase()));
           pupils = data.pupils;
           if (invitedId) pupils = pupils.filter(p => p.id === invitedId);
           renderNames();
@@ -152,7 +138,7 @@
         btn.disabled = false; btn.textContent = t('reg.create');
       }
     });
-    if (initialCode && invitedId) document.getElementById('classForm').requestSubmit();
+    loadClass();
   </script>
 </body>
 </html>

@@ -146,10 +146,7 @@
       if (!c) { info.textContent = ''; return; }
       clear(info);
       info.append(
-        t('t.regLink'),
-        el('code', {}, `/register.html?class=${c.code}`),
-        t('t.code'),
-        el('b', {}, c.code),
+        el('a', { class: 'btn small secondary', href: `/register.html?class=${c.code}` }, t('t.manualAccess')),
         el('a', { class: 'btn small', href: `/registration-cards.html?classId=${c.id}` }, t('t.qrCards')),
         c.isDemo ? demoBadge() : '',
         el('button', { class: 'btn small secondary', style: 'margin-left: 6px;', onclick: renameClass }, t('t.rename')),

@@ -11,6 +11,7 @@ const STRINGS = {
     'nav.teacher': 'Teacher login',
     'nav.register': 'Pupil PIN sign in',
     'nav.pupil': 'Pupil login',
+    'nav.scanQr': 'Pupils: scan your personal QR card to open your homework.',
 
     'common.signIn': 'Sign in',
     'common.signingIn': 'Signing in…',
@@ -59,6 +60,7 @@ const STRINGS = {
     'reg.regCode': 'Your 6-digit PIN',
     'reg.regCodePh': '6-digit PIN',
     'reg.invalidQr': 'This QR does not match a student in this class. Ask your teacher for a new card.',
+    'reg.qrOnly': 'Scan your personal QR card, or use the private link from your teacher.',
     't.qrCards': 'Student sign-in QR cards',
     'qr.title': 'One-tap sign-in for every student',
     'qr.help': 'Scan a personal card to sign that student in automatically—no username or password needed.',
@@ -98,8 +100,7 @@ const STRINGS = {
     't.tab.assign': 'Assign Homework',
     't.tab.manager': 'Homework Manager',
     't.class': 'Class',
-    't.regLink': 'Registration link: ',
-    't.code': ' · code ',
+    't.manualAccess': 'Manual PIN sign-in',
     't.pupilCode': ' · pupil code ',
 
     't.students.sub': '{n} pupils · {class}',
@@ -360,6 +361,7 @@ const STRINGS = {
     'nav.teacher': 'Log Masuk Guru',
     'nav.register': 'Log masuk PIN murid',
     'nav.pupil': 'Log Masuk Murid',
+    'nav.scanQr': 'Murid: imbas kad QR peribadi untuk membuka kerja rumah anda.',
 
     'common.signIn': 'Log Masuk',
     'common.signingIn': 'Sedang log masuk…',
@@ -408,6 +410,7 @@ const STRINGS = {
     'reg.regCode': 'PIN 6 digit anda',
     'reg.regCodePh': 'PIN 6 digit',
     'reg.invalidQr': 'QR ini tidak sepadan dengan murid dalam kelas ini. Minta kad baharu daripada guru.',
+    'reg.qrOnly': 'Imbas kad QR peribadi anda, atau gunakan pautan peribadi daripada guru.',
     't.qrCards': 'Kad QR log masuk murid',
     'qr.title': 'Log masuk sekali imbas untuk setiap murid',
     'qr.help': 'Imbas kad peribadi untuk log masuk secara automatik—tanpa nama pengguna atau kata laluan.',
@@ -447,8 +450,7 @@ const STRINGS = {
     't.tab.assign': 'Beri Kerja Rumah',
     't.tab.manager': 'Pengurusan Kerja Rumah',
     't.class': 'Kelas',
-    't.regLink': 'Pautan pendaftaran: ',
-    't.code': ' · kod ',
+    't.manualAccess': 'Log masuk PIN manual',
     't.pupilCode': ' · kod murid ',
 
     't.students.sub': '{n} murid · {class}',

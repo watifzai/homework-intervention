@@ -20,7 +20,7 @@ import {
 import {
   markSnapshot, recurringErrors, countQuestions, sanitizeSnapshotForPupil, validateTemplateContent,
 } from './marking.js';
-import { seedDemo, ensureDemoPupil, relabelDemoTemplates } from './seed.js';
+import { seedDemo, ensureDemoPupil, relabelDemoTemplates, removeDemoData } from './seed.js';
 import { generateHomework } from '../public/js/ai.js';
 import QRCode from 'qrcode';
 import { zipSync, strToU8 } from 'fflate';
@@ -1204,13 +1204,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-export async function startServer({ port = PORT, seed = true } = {}) {
+export async function startServer({ port = PORT, seed = false } = {}) {
   if (seed) {
     const r = seedDemo();
     if (r.seeded) console.log('Demo data seeded (labelled is_demo=1, separate from real records).');
     const rp = ensureDemoPupil();
     if (rp.seeded) console.log('Demo pupil access account created (labelled is_demo=1).');
     relabelDemoTemplates();
+    await flushCloud();
+  } else {
+    const cleaned = removeDemoData();
+    if (Object.values(cleaned).some(Boolean)) {
+      console.log(`Demo data removed; preserved 6 Mawar and renamed the teacher to Ms Falisha (${JSON.stringify(cleaned)}).`);
+    }
     await flushCloud();
   }
   return new Promise((resolve) => {

@@ -8,7 +8,6 @@ const STRINGS = {
   en: {
     'app.name': 'Year 6 English',
     'app.tagline': 'Intervention platform: words, sentences and paragraphs.',
-    'app.demoNote': 'Demo data is clearly labelled wherever it appears.',
     'nav.teacher': 'Teacher login',
     'nav.register': 'Pupil registration',
     'nav.pupil': 'Pupil login',
@@ -358,7 +357,6 @@ const STRINGS = {
   ms: {
     'app.name': 'Year 6 English',
     'app.tagline': 'Platform intervensi: perkataan, ayat dan perenggan.',
-    'app.demoNote': 'Data demo ditanda dengan jelas di mana-mana.',
     'nav.teacher': 'Log Masuk Guru',
     'nav.register': 'Pendaftaran Murid',
     'nav.pupil': 'Log Masuk Murid',

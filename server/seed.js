@@ -271,3 +271,80 @@ export function relabelDemoTemplates() {
     run("UPDATE templates SET title = REPLACE(title, ?, ?) WHERE is_demo = 1 AND title LIKE '%' || ?", from, to, from);
   }
 }
+
+// Production cleanup for deployments that started with the old demo seed.
+// The real class is preserved even if an older snapshot accidentally marked it
+// as demo data. The original teacher account is retained so its login and
+// ownership links remain valid; only its public identity is converted.
+export function removeDemoData({ preserveClassName = '6 Mawar', teacherName = 'Ms Falisha' } = {}) {
+  const result = { removedClasses: 0, removedPupils: 0, removedTemplateSets: 0, renamedTeachers: 0 };
+
+  tx(() => {
+    const preservedClasses = q(
+      'SELECT id FROM classes WHERE lower(trim(name)) = lower(trim(?))',
+      preserveClassName
+    );
+    const preservedIds = preservedClasses.map((row) => row.id);
+
+    for (const classId of preservedIds) {
+      run('UPDATE classes SET is_demo = 0 WHERE id = ?', classId);
+      run('UPDATE pupils SET is_demo = 0 WHERE class_id = ?', classId);
+      run(
+        `UPDATE accounts SET is_demo = 0 WHERE id IN (
+          SELECT account_id FROM pupils WHERE class_id = ? AND account_id IS NOT NULL
+        )`,
+        classId
+      );
+    }
+
+    const demoClassIds = q(
+      'SELECT id FROM classes WHERE is_demo = 1 AND lower(trim(name)) <> lower(trim(?))',
+      preserveClassName
+    ).map((row) => row.id);
+    for (const classId of demoClassIds) {
+      const pupilAccounts = q(
+        'SELECT account_id FROM pupils WHERE class_id = ? AND account_id IS NOT NULL',
+        classId
+      ).map((row) => row.account_id);
+      run(
+        `DELETE FROM pupil_assignments
+         WHERE pupil_id IN (SELECT id FROM pupils WHERE class_id = ?)
+            OR assignment_id IN (SELECT id FROM assignments WHERE class_id = ?)`,
+        classId, classId
+      );
+      run('DELETE FROM assignments WHERE class_id = ?', classId);
+      result.removedPupils += Number(run('DELETE FROM pupils WHERE class_id = ?', classId).changes);
+      result.removedClasses += Number(run('DELETE FROM classes WHERE id = ?', classId).changes);
+      for (const accountId of pupilAccounts) run('DELETE FROM accounts WHERE id = ? AND role = ?', accountId, 'pupil');
+    }
+
+    // Remove sample homework and anything assigned from it.
+    const demoSetIds = q('SELECT id FROM template_sets WHERE is_demo = 1').map((row) => row.id);
+    for (const setId of demoSetIds) {
+      run(
+        'DELETE FROM pupil_assignments WHERE assignment_id IN (SELECT id FROM assignments WHERE set_id = ?)',
+        setId
+      );
+      run('DELETE FROM assignments WHERE set_id = ?', setId);
+      run('DELETE FROM templates WHERE set_id = ? OR is_demo = 1', setId);
+      result.removedTemplateSets += Number(run('DELETE FROM template_sets WHERE id = ?', setId).changes);
+    }
+
+    const remainingDemoPupils = q('SELECT id, account_id FROM pupils WHERE is_demo = 1');
+    for (const pupil of remainingDemoPupils) {
+      run('DELETE FROM pupil_assignments WHERE pupil_id = ?', pupil.id);
+      result.removedPupils += Number(run('DELETE FROM pupils WHERE id = ?', pupil.id).changes);
+      if (pupil.account_id) run("DELETE FROM accounts WHERE id = ? AND role = 'pupil'", pupil.account_id);
+    }
+    run("DELETE FROM templates WHERE is_demo = 1");
+    run("DELETE FROM accounts WHERE is_demo = 1 AND role = 'pupil'");
+    result.renamedTeachers = Number(run(
+      `UPDATE accounts SET display_name = ?, is_demo = 0
+       WHERE role = 'teacher'
+         AND (is_demo = 1 OR lower(trim(display_name)) IN ('ms demo', 'ms. demo teacher', 'ms demo teacher'))`,
+      teacherName
+    ).changes);
+  });
+
+  return result;
+}

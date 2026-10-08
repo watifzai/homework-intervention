@@ -22,7 +22,7 @@ process.env.Y6_DB_PATH = path.join(TMP, 'test.db');
 const dbModule = await import('../server/db.js');
 
 const { startServer } = await import('../server/index.js');
-const { demoCredentials } = await import('../server/seed.js');
+const { demoCredentials, removeDemoData } = await import('../server/seed.js');
 
 const PORT = 3999;
 const BASE = `http://localhost:${PORT}`;
@@ -453,7 +453,27 @@ async function main() {
   ok('pupil cannot create topic sets', r.status === 403);
 
 
-
+  console.log('\n— production demo cleanup —');
+  const teacherId = dbModule.one("SELECT id FROM accounts WHERE role = 'teacher' ORDER BY id LIMIT 1").id;
+  const realClassId = dbModule.run(
+    'INSERT INTO classes (name, code, reg_code, teacher_id, is_demo) VALUES (?,?,?,?,0)',
+    '6 Mawar', 'REAL6M', 'KEEP6M', teacherId
+  ).lastInsertRowid;
+  dbModule.run(
+    'INSERT INTO pupils (class_id, name, student_no, is_demo) VALUES (?,?,?,0)',
+    realClassId, 'Real Student', 'M001'
+  );
+  const cleaned = removeDemoData();
+  const remainingClasses = dbModule.q('SELECT name FROM classes ORDER BY name');
+  ok('cleanup removes demo classes', cleaned.removedClasses === 2 && remainingClasses.length === 1);
+  ok('cleanup preserves 6 Mawar', remainingClasses[0]?.name === '6 Mawar');
+  ok('cleanup preserves pupils in 6 Mawar', !!dbModule.one("SELECT id FROM pupils WHERE name = 'Real Student'"));
+  ok('cleanup removes demo homework sets', dbModule.one('SELECT COUNT(*) AS c FROM template_sets WHERE is_demo = 1').c === 0);
+  const cleanedTeacher = dbModule.one("SELECT display_name, is_demo FROM accounts WHERE role = 'teacher' ORDER BY id LIMIT 1");
+  ok('cleanup renames teacher to Ms Falisha', cleanedTeacher.display_name === 'Ms Falisha' && cleanedTeacher.is_demo === 0);
+  const LoginAfterCleanup = client();
+  const loginAfterCleanup = await LoginAfterCleanup('POST', '/api/auth/code-login', { code: '0000' });
+  ok('teacher PIN still works after cleanup', loginAfterCleanup.status === 200 && loginAfterCleanup.data.displayName === 'Ms Falisha');
 
   console.log(`\n========== RESULT: ${passed} passed, ${failed} failed ==========`);
   if (failures.length) console.log('Failed:', failures.join(', '));
